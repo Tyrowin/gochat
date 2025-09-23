@@ -1,0 +1,18 @@
+name: Go Report Card Refresh
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    name: Refresh Go Report Card
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Go Report Card refresh
+        run: |
+          REFRESH_URL="https://goreportcard.com/report/github.com/Tyrowin/gochat?refresh=1"
+          echo "Requesting refresh: ${REFRESH_URL}"
+          curl -sSf "${REFRESH_URL}" >/dev/null
+          echo "Go Report Card refresh request completed."
