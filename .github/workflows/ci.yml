@@ -1,0 +1,235 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  GO_VERSION: '1.25.1'
+
+jobs:
+  # Job 1: Build and Test
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build application
+        run: go build -v ./...
+
+      - name: Run tests
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Generate coverage report
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # Job 2: Static Analysis with golangci-lint
+  lint:
+    name: Lint Code
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v4
+        with:
+          version: latest
+          args: --timeout=10m --config=.golangci.yml
+
+  # Job 3: Security Vulnerability Scanning
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+      - name: Run Nancy (OSS Index vulnerability scanner)
+        run: |
+          go list -json -deps ./... | docker run --rm -i sonatypecommunity/nancy:latest sleuth
+
+  # Job 4: Dependency Analysis
+  dependency-check:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Check for outdated dependencies
+        run: |
+          go list -u -m all > dependencies.txt
+          echo "Current dependencies:"
+          cat dependencies.txt
+
+      - name: Check go.mod and go.sum consistency
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+  # Job 5: Build Matrix for Multiple Go Versions
+  build-matrix:
+    name: Build Matrix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.24.x', '1.25.x']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: true
+
+      - name: Build with Go ${{ matrix.go-version }}
+        run: go build -v ./...
+
+      - name: Test with Go ${{ matrix.go-version }}
+        run: go test -v ./...
+
+  # Job 6: Docker Security Scan (if using Docker)
+  docker-scan:
+    name: Docker Security Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: |
+          # Create a simple Dockerfile for scanning if it doesn't exist
+          if [ ! -f Dockerfile ]; then
+            cat > Dockerfile << EOF
+          FROM golang:1.25.1-alpine AS builder
+          WORKDIR /app
+          COPY go.mod go.sum ./
+          RUN go mod download
+          COPY . .
+          RUN CGO_ENABLED=0 GOOS=linux go build -o nexus-chat-server ./cmd/server
+
+          FROM alpine:latest
+          RUN apk --no-cache add ca-certificates
+          WORKDIR /root/
+          COPY --from=builder /app/nexus-chat-server .
+          CMD ["./nexus-chat-server"]
+          EOF
+          fi
+          docker build -t nexus-chat-server:latest .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'nexus-chat-server:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Job 7: Code Quality Gates
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-latest
+    needs: [build-and-test, lint, security-scan]
+    if: always()
+
+    steps:
+      - name: Check job results
+        run: |
+          echo "Build and Test: ${{ needs.build-and-test.result }}"
+          echo "Lint: ${{ needs.lint.result }}"
+          echo "Security Scan: ${{ needs.security-scan.result }}"
+
+          if [ "${{ needs.build-and-test.result }}" != "success" ] || \
+             [ "${{ needs.lint.result }}" != "success" ] || \
+             [ "${{ needs.security-scan.result }}" != "success" ]; then
+            echo "Quality gate failed!"
+            exit 1
+          fi
+
+          echo "All quality checks passed!"
+
+  # Job 8: Notification (optional)
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [quality-gate]
+    if: always()
+
+    steps:
+      - name: Notify on failure
+        if: needs.quality-gate.result != 'success'
+        run: |
+          echo "CI Pipeline failed. Please check the logs and fix the issues."
+          # Add notification logic here (Slack, email, etc.)
+
+      - name: Notify on success
+        if: needs.quality-gate.result == 'success'
+        run: |
+          echo "CI Pipeline completed successfully!"
+          # Add success notification logic here

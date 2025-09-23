@@ -1,0 +1,167 @@
+# yaml-language-server: $schema=null
+# golangci-lint configuration for nexus-chat-server
+# See https://golangci-lint.run/usage/configuration/
+# 
+# NOTE: VS Code may show YAML schema validation errors for this file.
+# These are false positives - the golangci-lint configuration is correct.
+# The VS Code YAML extension uses an outdated/incorrect schema for golangci-lint.run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment # Can be noisy for structs
+
+  gofmt:
+    simplify: true
+
+  goimports:
+    local-prefixes: github.com/Tyrowin/nexus-chat-server
+
+  gocyclo:
+    min-complexity: 15
+
+  dupl:
+    threshold: 100
+
+  goconst:
+    min-len: 2
+    min-occurrences: 2
+
+  misspell:
+    locale: US
+
+  lll:
+    line-length: 120
+
+  unused:
+    check-exported: false
+
+  unparam:
+    check-exported: false
+
+  nakedret:
+    max-func-lines: 30
+
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+      - diagnostic
+    disabled-checks:
+      - whyNoLint
+      - wrapperFunc
+      - ifElseChain
+      - singleCaseSwitch
+
+  gosec:
+    severity: medium
+    confidence: medium
+    excludes:
+      - G104 # Audit errors not checked
+    includes:
+      - G401 # Detect the usage of DES, RC4, MD5 or SHA1
+      - G501 # Import blocklist: crypto/md5
+      - G502 # Import blocklist: crypto/des
+      - G503 # Import blocklist: crypto/rc4
+      - G504 # Import blocklist: net/http/cgi
+      - G505 # Import blocklist: crypto/sha1
+
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+
+  revive:
+    min-confidence: 0.8
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: range-val-in-closure
+
+      - name: unreachable-code
+      - name: confusing-naming
+      - name: time-naming
+      - name: var-declaration
+      - name: unexported-return
+      - name: errorf
+      - name: blank-imports
+      - name: context-as-argument
+      - name: dot-imports
+      - name: error-return
+      - name: error-strings
+      - name: error-naming
+      - name: exported
+      - name: if-return
+      - name: increment-decrement
+      - name: indent-error-flow
+      - name: range
+      - name: receiver-naming
+      - name: redefines-builtin-id
+      - name: superfluous-else
+      - name: unexported-naming
+      - name: unnecessary-stmt
+      - name: unused-parameter
+      - name: unused-receiver
+
+linters:
+  enable:
+    # Default linters
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+
+    # Security and quality linters
+    - gosec
+    - gocritic
+    - revive
+    - gofmt
+    - goimports
+    - misspell
+    - goconst
+    - gocyclo
+    - dupl
+    - lll
+    - nakedret
+    - unparam
+    - errorlint
+    - bodyclose
+    - copyloopvar
+    - nilerr
+    - stylecheck
+    - unconvert
+    - wastedassign
+    - whitespace
+
+  disable: []
+
+issues:
+  exclude-rules:
+    # Exclude some linters from running on test files
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - dupl
+        - gosec
+        - lll
+
+    # Exclude magic number detection for common values
+    - linters:
+        - goconst
+      text: "Magic number"
+
+    # Ignore missing comments for main and init functions
+    - linters:
+        - revive
+      text: "exported (function|method|type|const|var) .* should have comment or be unexported"
+      source: "^(func main|func init)"
+
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -1,0 +1,16 @@
+{
+  "yaml.validate": false,
+  "yaml.schemaStore.enable": false,
+  "yaml.schemas": {
+    "https://json.schemastore.org/golangci-lint.json": "!.golangci.yml"
+  },
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml"
+  },
+  "files.associations": {
+    ".golangci.yml": "yaml"
+  },
+  "yaml.customTags": [],
+  "redhat.telemetry.enabled": false,
+  "yaml.disableAdditionalProperties": true
+}
