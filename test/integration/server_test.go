@@ -23,7 +23,7 @@ func TestHealthEndpointIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check status code
 	if resp.StatusCode != http.StatusOK {
@@ -66,7 +66,7 @@ func TestServerTimeouts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
@@ -88,7 +88,7 @@ func TestServerSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Verify server is responding
 	if resp.StatusCode != http.StatusOK {
@@ -100,7 +100,7 @@ func TestServerSecurity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
-	defer resp404.Body.Close()
+	defer func() { _ = resp404.Body.Close() }()
 
 	// With our current simple mux setup, unhandled routes return 404
 	if resp404.StatusCode != http.StatusNotFound {
@@ -127,7 +127,7 @@ func TestFullServerIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to make health check request: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Verify response
 	if resp.StatusCode != http.StatusOK {

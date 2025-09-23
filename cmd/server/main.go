@@ -1,3 +1,4 @@
+// Package main implements the entry point for the Nexus Chat Server.
 package main
 
 import (

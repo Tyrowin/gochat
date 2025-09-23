@@ -64,9 +64,9 @@ jobs:
           cache: true
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.5.0
           args: --timeout=10m --config=.golangci.yml
 
   # Job 3: Security Vulnerability Scanning
@@ -121,7 +121,12 @@ jobs:
       - name: Check go.mod and go.sum consistency
         run: |
           go mod tidy
-          git diff --exit-code go.mod go.sum
+          # Only check go.sum if it exists (some projects use only stdlib)
+          if [ -f go.sum ]; then
+            git diff --exit-code go.mod go.sum
+          else
+            git diff --exit-code go.mod
+          fi
 
   # Job 5: Build Matrix for Multiple Go Versions
   build-matrix:
@@ -164,7 +169,8 @@ jobs:
             cat > Dockerfile << EOF
           FROM golang:1.25.1-alpine AS builder
           WORKDIR /app
-          COPY go.mod go.sum ./
+          COPY go.mod ./
+          COPY go.su[m] ./
           RUN go mod download
           COPY . .
           RUN CGO_ENABLED=0 GOOS=linux go build -o nexus-chat-server ./cmd/server

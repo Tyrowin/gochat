@@ -1,12 +1,15 @@
 # yaml-language-server: $schema=null
 # golangci-lint configuration for nexus-chat-server
 # See https://golangci-lint.run/usage/configuration/
-# 
+#
 # NOTE: VS Code may show YAML schema validation errors for this file.
 # These are false positives - the golangci-lint configuration is correct.
-# The VS Code YAML extension uses an outdated/incorrect schema for golangci-lint.run:
+version: 2
+
+run:
   timeout: 5m
   modules-download-mode: readonly
+  go: "1.25.1"
 
 linters-settings:
   govet:
@@ -108,21 +111,17 @@ linters-settings:
 
 linters:
   enable:
-    # Default linters
+    # Default linters (enabled by default)
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
-    - typecheck
     - unused
 
-    # Security and quality linters
+    # Additional linters
     - gosec
     - gocritic
     - revive
-    - gofmt
-    - goimports
     - misspell
     - goconst
     - gocyclo
@@ -134,7 +133,6 @@ linters:
     - bodyclose
     - copyloopvar
     - nilerr
-    - stylecheck
     - unconvert
     - wastedassign
     - whitespace
