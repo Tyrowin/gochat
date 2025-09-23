@@ -246,17 +246,18 @@ func (c *Client) writePump() {
 		c.closeConnection()
 	}()
 
-	for {
-		select {
-		case message, ok := <-c.send:
-			if !c.handleMessage(message, ok) {
-				return
-			}
-		case <-ticker.C:
-			if !c.handlePing() {
-				return
-			}
-		}
+	for c.processWriteEvent(ticker) {
+	}
+}
+
+// processWriteEvent waits for the next write event and returns false when the
+// pump should stop processing.
+func (c *Client) processWriteEvent(ticker *time.Ticker) bool {
+	select {
+	case message, ok := <-c.send:
+		return c.handleMessage(message, ok)
+	case <-ticker.C:
+		return c.handlePing()
 	}
 }
 
