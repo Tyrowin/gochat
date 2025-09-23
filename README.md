@@ -1,4 +1,4 @@
-# Nexus Chat Server
+# GoChat
 
 High-performance, standalone, multi-client chat server built using Go and WebSockets.
 
@@ -22,8 +22,8 @@ High-performance, standalone, multi-client chat server built using Go and WebSoc
 1. **Clone the repository**
 
    ```bash
-   git clone https://github.com/Tyrowin/nexus-chat-server.git
-   cd nexus-chat-server
+   git clone https://github.com/Tyrowin/gochat.git
+   cd gochat
    ```
 
 2. **Install development tools**
@@ -177,7 +177,7 @@ make docker-run
 ## Project Structure
 
 ```
-nexus-chat-server/
+gochat/
 ├── cmd/
 │   └── server/          # Application entry point
 │       └── main.go

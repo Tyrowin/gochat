@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tyrowin/nexus-chat-server/internal/server"
+	"github.com/Tyrowin/gochat/internal/server"
 )
 
 // TestHealthHandlerUnit tests the health handler function in isolation
@@ -21,13 +21,13 @@ func TestHealthHandlerUnit(t *testing.T) {
 			name:           "GET request to health endpoint",
 			method:         "GET",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "Nexus Chat Server is running!",
+			expectedBody:   "GoChat server is running!",
 		},
 		{
 			name:           "POST request to health endpoint",
 			method:         "POST",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "Nexus Chat Server is running!",
+			expectedBody:   "GoChat server is running!",
 		},
 	}
 
@@ -63,7 +63,7 @@ func TestHealthHandlerUnit(t *testing.T) {
 // TestHTTPMethodsUnit tests various HTTP methods on the health endpoint
 func TestHTTPMethodsUnit(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if _, err := w.Write([]byte("Nexus Chat Server is running!")); err != nil {
+		if _, err := w.Write([]byte("GoChat server is running!")); err != nil {
 			t.Errorf("Failed to write response: %v", err)
 		}
 	})
@@ -90,7 +90,7 @@ func TestHTTPMethodsUnit(t *testing.T) {
 			// Note: In a real implementation, HEAD would typically not include a body
 			// but our test handler is simplified
 			if method != "HEAD" {
-				expected := "Nexus Chat Server is running!"
+				expected := "GoChat server is running!"
 				if rr.Body.String() != expected {
 					t.Errorf("handler returned unexpected body for %s: got %v want %v",
 						method, rr.Body.String(), expected)
@@ -123,7 +123,7 @@ func TestSetupRoutes(t *testing.T) {
 			status, http.StatusOK)
 	}
 
-	expected := "Nexus Chat Server is running!"
+	expected := "GoChat server is running!"
 	if rr.Body.String() != expected {
 		t.Errorf("handler returned unexpected body: got %v want %v",
 			rr.Body.String(), expected)

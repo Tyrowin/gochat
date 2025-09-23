@@ -1,4 +1,4 @@
-# Makefile for nexus-chat-server
+# Makefile for gochat
 # 
 # This Makefile provides convenient targets for development, testing, 
 # security scanning, and building the application.
@@ -9,7 +9,7 @@
 .DEFAULT_GOAL := help
 
 # Variables
-BINARY_NAME=nexus-chat-server
+BINARY_NAME=gochat
 BUILD_DIR=./bin
 MAIN_PATH=./cmd/server
 GO_FILES=$(shell find . -name '*.go' -not -path './vendor/*')

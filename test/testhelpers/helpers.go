@@ -52,7 +52,7 @@ func AssertContentType(t *testing.T, resp *http.Response, expected string) {
 func CreateHealthHandler() http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		if _, err := w.Write([]byte("Nexus Chat Server is running!")); err != nil {
+		if _, err := w.Write([]byte("GoChat server is running!")); err != nil {
 			// In a real application, you might want to log this error
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}

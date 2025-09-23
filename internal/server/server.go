@@ -1,4 +1,4 @@
-// Package server implements the HTTP server functionality for the Nexus Chat Server.
+// Package server implements the HTTP server functionality for the GoChat server.
 package server
 
 import (
@@ -10,7 +10,7 @@ import (
 // HealthHandler handles the health check endpoint
 func HealthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
-	_, _ = fmt.Fprintf(w, "Nexus Chat Server is running!")
+	_, _ = fmt.Fprintf(w, "GoChat server is running!")
 }
 
 // SetupRoutes configures all HTTP routes for the server

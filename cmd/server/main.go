@@ -1,15 +1,15 @@
-// Package main implements the entry point for the Nexus Chat Server.
+// Package main implements the entry point for the GoChat server.
 package main
 
 import (
 	"fmt"
 	"log"
 
-	"github.com/Tyrowin/nexus-chat-server/internal/server"
+	"github.com/Tyrowin/gochat/internal/server"
 )
 
 func main() {
-	fmt.Println("Starting Nexus Chat Server...")
+	fmt.Println("Starting GoChat server...")
 
 	// Create configuration
 	config := server.NewConfig()

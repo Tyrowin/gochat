@@ -173,21 +173,21 @@ jobs:
           COPY go.su[m] ./
           RUN go mod download
           COPY . .
-          RUN CGO_ENABLED=0 GOOS=linux go build -o nexus-chat-server ./cmd/server
+          RUN CGO_ENABLED=0 GOOS=linux go build -o gochat ./cmd/server
 
           FROM alpine:latest
           RUN apk --no-cache add ca-certificates
           WORKDIR /root/
-          COPY --from=builder /app/nexus-chat-server .
-          CMD ["./nexus-chat-server"]
+          COPY --from=builder /app/gochat .
+          CMD ["./gochat"]
           EOF
           fi
-          docker build -t nexus-chat-server:latest .
+          docker build -t gochat:latest .
 
       - name: Run Trivy vulnerability scanner
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'nexus-chat-server:latest'
+          image-ref: 'gochat:latest'
           format: 'sarif'
           output: 'trivy-results.sarif'
 

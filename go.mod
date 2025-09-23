@@ -1,3 +1,3 @@
-module github.com/Tyrowin/nexus-chat-server
+module github.com/Tyrowin/gochat
 
 go 1.25.1

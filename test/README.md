@@ -1,4 +1,4 @@
-# Test Configuration for Nexus Chat Server
+# Test Configuration for GoChat
 
 ## Test Structure
 

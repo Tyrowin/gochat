@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Tyrowin/nexus-chat-server/internal/server"
+	"github.com/Tyrowin/gochat/internal/server"
 )
 
 // TestHealthEndpointIntegration tests the health endpoint with the actual server configuration
