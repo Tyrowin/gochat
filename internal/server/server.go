@@ -29,6 +29,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// Client represents a WebSocket client connection in the chat system.
+// It manages the connection state, message sending channel, hub reference,
+// and client address information.
 type Client struct {
 	conn *websocket.Conn
 	send chan []byte
@@ -36,6 +39,9 @@ type Client struct {
 	addr string
 }
 
+// Hub manages all WebSocket client connections and handles message broadcasting.
+// It maintains client registration/unregistration and ensures thread-safe operations
+// through mutex protection.
 type Hub struct {
 	clients    map[*Client]bool
 	broadcast  chan []byte
@@ -44,6 +50,8 @@ type Hub struct {
 	mutex      sync.RWMutex
 }
 
+// NewHub creates and initializes a new Hub instance with all necessary channels
+// and client map. The returned Hub is ready to manage WebSocket connections.
 func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
@@ -53,6 +61,9 @@ func NewHub() *Hub {
 	}
 }
 
+// NewClient creates a new Client instance with the provided WebSocket connection,
+// hub reference, and client address. The client's send channel is buffered
+// to handle message queuing.
 func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 	return &Client{
 		conn: conn,
@@ -62,25 +73,35 @@ func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 	}
 }
 
+// GetRegisterChan returns the channel used for registering new clients to the hub.
+// This channel is write-only from the caller's perspective.
 func (h *Hub) GetRegisterChan() chan<- *Client {
 	return h.register
 }
 
+// GetUnregisterChan returns the channel used for unregistering clients from the hub.
+// This channel is write-only from the caller's perspective.
 func (h *Hub) GetUnregisterChan() chan<- *Client {
 	return h.unregister
 }
 
+// GetBroadcastChan returns the channel used for broadcasting messages to all clients.
+// This channel is write-only from the caller's perspective.
 func (h *Hub) GetBroadcastChan() chan<- []byte {
 	return h.broadcast
 }
 
+// GetSendChan returns the client's send channel for reading outgoing messages.
+// This channel is read-only from the caller's perspective.
 func (c *Client) GetSendChan() <-chan []byte {
 	return c.send
 }
 
 func (h *Hub) safeSend(client *Client, message []byte) bool {
 	defer func() {
-		recover()
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic in safeSend: %v", r)
+		}
 	}()
 
 	// Check if client is still registered before sending
@@ -100,6 +121,9 @@ func (h *Hub) safeSend(client *Client, message []byte) bool {
 	}
 }
 
+// Run starts the hub's main event loop, handling client registration, unregistration,
+// and message broadcasting. This method should be called in a separate goroutine
+// as it runs indefinitely.
 func (h *Hub) Run() {
 	for {
 		select {
@@ -160,12 +184,18 @@ func (h *Hub) Run() {
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			log.Printf("Error closing connection in readPump: %v", err)
+		}
 	}()
 
-	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		log.Printf("Error setting read deadline: %v", err)
+	}
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+			log.Printf("Error setting read deadline in pong handler: %v", err)
+		}
 		return nil
 	})
 
@@ -187,15 +217,22 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(54 * time.Second)
 	defer func() {
 		ticker.Stop()
-		c.conn.Close()
+		if err := c.conn.Close(); err != nil {
+			log.Printf("Error closing connection in writePump: %v", err)
+		}
 	}()
 
 	for {
 		select {
 		case message, ok := <-c.send:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				log.Printf("Error setting write deadline: %v", err)
+				return
+			}
 			if !ok {
-				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
+				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
+					log.Printf("Error writing close message: %v", err)
+				}
 				return
 			}
 
@@ -203,12 +240,21 @@ func (c *Client) writePump() {
 			if err != nil {
 				return
 			}
-			w.Write(message)
+			if _, err := w.Write(message); err != nil {
+				log.Printf("Error writing message: %v", err)
+				return
+			}
 
 			n := len(c.send)
 			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.send)
+				if _, err := w.Write([]byte{'\n'}); err != nil {
+					log.Printf("Error writing newline: %v", err)
+					return
+				}
+				if _, err := w.Write(<-c.send); err != nil {
+					log.Printf("Error writing queued message: %v", err)
+					return
+				}
 			}
 
 			if err := w.Close(); err != nil {
@@ -216,7 +262,10 @@ func (c *Client) writePump() {
 			}
 
 		case <-ticker.C:
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+				log.Printf("Error setting write deadline for ping: %v", err)
+				return
+			}
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
@@ -229,7 +278,7 @@ var hub = NewHub()
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
+	CheckOrigin: func(_ *http.Request) bool {
 		return true
 	},
 }
@@ -421,9 +470,13 @@ func TestPageHandler(w http.ResponseWriter, _ *http.Request) {
     </script>
 </body>
 </html>`
-	fmt.Fprint(w, html)
+	if _, err := fmt.Fprint(w, html); err != nil {
+		log.Printf("Error writing HTML response: %v", err)
+	}
 }
 
+// SetupRoutes configures and returns an HTTP ServeMux with all application routes.
+// It sets up handlers for health check, WebSocket endpoint, and test page.
 func SetupRoutes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", HealthHandler)
@@ -432,6 +485,8 @@ func SetupRoutes() *http.ServeMux {
 	return mux
 }
 
+// CreateServer creates and configures an HTTP server with the specified port and handler.
+// It sets reasonable timeout values for production use.
 func CreateServer(port string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:         port,
@@ -442,21 +497,29 @@ func CreateServer(port string, handler http.Handler) *http.Server {
 	}
 }
 
+// Config holds the server configuration settings.
+// Currently it only contains the port configuration.
 type Config struct {
 	Port string
 }
 
+// NewConfig creates a new Config instance with default values.
+// The default port is set to :8080.
 func NewConfig() *Config {
 	return &Config{
 		Port: ":8080",
 	}
 }
 
+// StartHub initializes and starts the global hub in a separate goroutine.
+// This should be called before starting the HTTP server.
 func StartHub() {
 	go hub.Run()
 	log.Println("Hub started and ready to manage WebSocket connections")
 }
 
+// StartServer starts the HTTP server and begins listening for connections.
+// It returns an error if the server fails to start.
 func StartServer(server *http.Server) error {
 	fmt.Printf("Server listening on port %s\n", server.Addr)
 	return server.ListenAndServe()

@@ -1,3 +1,9 @@
+// Package integration contains integration tests for the GoChat server.
+//
+// These tests verify that multiple components work together correctly by testing
+// the complete system behavior with real HTTP servers, WebSocket connections,
+// and end-to-end functionality. Integration tests ensure that the system works
+// as expected when all components are assembled together.
 package integration
 
 import (
@@ -13,6 +19,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// TestWebSocketEndpointIntegration tests the WebSocket endpoint with full server integration.
+// It verifies that WebSocket connections can be established, messages can be sent and received,
+// and the complete WebSocket functionality works in a real server environment.
 func TestWebSocketEndpointIntegration(t *testing.T) {
 	server.StartHub()
 
@@ -76,6 +85,9 @@ func TestWebSocketEndpointIntegration(t *testing.T) {
 	})
 }
 
+// TestWebSocketMessageBroadcasting tests the WebSocket message broadcasting functionality.
+// It verifies that messages sent by one client are properly broadcasted to all other
+// connected clients through the hub system.
 func TestWebSocketMessageBroadcasting(t *testing.T) {
 	server.StartHub()
 
@@ -146,6 +158,9 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 	}
 }
 
+// TestWebSocketConnectionLifecycle tests the complete lifecycle of WebSocket connections.
+// It verifies that connections can be established, used for communication, and properly
+// closed, including testing multiple sequential connections.
 func TestWebSocketConnectionLifecycle(t *testing.T) {
 	server.StartHub()
 
@@ -205,6 +220,9 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 	})
 }
 
+// TestWebSocketConcurrentConnections tests concurrent WebSocket connections.
+// It verifies that multiple clients can connect simultaneously and exchange messages
+// without causing race conditions or system instability.
 func TestWebSocketConcurrentConnections(t *testing.T) {
 	// Start the hub
 	server.StartHub()

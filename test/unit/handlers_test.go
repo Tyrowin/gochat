@@ -1,3 +1,8 @@
+// Package unit contains unit tests for individual components of the GoChat server.
+//
+// These tests focus on testing specific functions and methods in isolation,
+// using mocks and stubs where necessary to avoid dependencies on external systems.
+// Unit tests ensure that each component behaves correctly under various conditions.
 package unit
 
 import (
@@ -9,7 +14,9 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 )
 
-// TestHealthHandlerUnit tests the health handler function in isolation
+// TestHealthHandlerUnit tests the health handler function in isolation.
+// It verifies that the handler responds correctly to different HTTP methods
+// and returns the expected status code and response body.
 func TestHealthHandlerUnit(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -33,25 +40,20 @@ func TestHealthHandlerUnit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a request
 			req, err := http.NewRequest(tt.method, "/", http.NoBody)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			// Create a ResponseRecorder to record the response
 			rr := httptest.NewRecorder()
 
-			// Call the actual HealthHandler function from our server package
 			server.HealthHandler(rr, req)
 
-			// Check the status code
 			if status := rr.Code; status != tt.expectedStatus {
 				t.Errorf("handler returned wrong status code: got %v want %v",
 					status, tt.expectedStatus)
 			}
 
-			// Check the response body
 			if rr.Body.String() != tt.expectedBody {
 				t.Errorf("handler returned unexpected body: got %v want %v",
 					rr.Body.String(), tt.expectedBody)
@@ -60,7 +62,9 @@ func TestHealthHandlerUnit(t *testing.T) {
 	}
 }
 
-// TestHTTPMethodsUnit tests various HTTP methods on the health endpoint
+// TestHTTPMethodsUnit tests various HTTP methods on the health endpoint.
+// It verifies that the handler responds correctly to different HTTP methods
+// including GET, POST, PUT, DELETE, PATCH, HEAD, and OPTIONS.
 func TestHTTPMethodsUnit(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := w.Write([]byte("GoChat server is running!")); err != nil {
@@ -79,8 +83,6 @@ func TestHTTPMethodsUnit(t *testing.T) {
 
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
-
-			// All methods should return 200 for our simple handler
 			if status := rr.Code; status != http.StatusOK {
 				t.Errorf("handler returned wrong status code for %s: got %v want %v",
 					method, status, http.StatusOK)
@@ -100,7 +102,9 @@ func TestHTTPMethodsUnit(t *testing.T) {
 	}
 }
 
-// TestSetupRoutes tests the route setup function
+// TestSetupRoutes tests the route setup function.
+// It verifies that SetupRoutes returns a properly configured ServeMux
+// with the expected routes and handlers properly registered.
 func TestSetupRoutes(t *testing.T) {
 	mux := server.SetupRoutes()
 
@@ -130,7 +134,9 @@ func TestSetupRoutes(t *testing.T) {
 	}
 }
 
-// TestCreateServer tests the server creation function
+// TestCreateServer tests the server creation function.
+// It verifies that CreateServer returns an HTTP server with the correct
+// configuration including address, handler, and timeout settings.
 func TestCreateServer(t *testing.T) {
 	port := ":8080"
 	mux := server.SetupRoutes()
@@ -164,7 +170,9 @@ func TestCreateServer(t *testing.T) {
 	}
 }
 
-// TestNewConfig tests the configuration creation
+// TestNewConfig tests the configuration creation function.
+// It verifies that NewConfig returns a properly initialized Config
+// struct with the expected default values.
 func TestNewConfig(t *testing.T) {
 	config := server.NewConfig()
 

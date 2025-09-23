@@ -1,3 +1,8 @@
+// Package unit contains unit tests for individual components of the GoChat server.
+//
+// These tests focus on testing specific functions and methods in isolation,
+// using mocks and stubs where necessary to avoid dependencies on external systems.
+// Unit tests ensure that each component behaves correctly under various conditions.
 package unit
 
 import (
@@ -9,6 +14,9 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 )
 
+// TestWebSocketHandlerMethodValidation tests the WebSocket handler's HTTP method validation.
+// It verifies that the handler correctly rejects non-GET requests with the appropriate
+// status code and error message, as WebSocket upgrades require GET requests.
 func TestWebSocketHandlerMethodValidation(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -64,6 +72,9 @@ func TestWebSocketHandlerMethodValidation(t *testing.T) {
 	}
 }
 
+// TestWebSocketHandlerGETWithoutUpgrade tests the WebSocket handler's behavior with GET requests
+// that don't include proper WebSocket upgrade headers. It verifies that such requests
+// are rejected with a Bad Request status code.
 func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
 	req := httptest.NewRequest("GET", "/ws", nil)
 	w := httptest.NewRecorder()
@@ -78,6 +89,9 @@ func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
 	}
 }
 
+// TestWebSocketHandlerContentType tests that the WebSocket handler sets the correct
+// Content-Type header when rejecting invalid requests. It verifies that error responses
+// include the appropriate content type for the error message.
 func TestWebSocketHandlerContentType(t *testing.T) {
 	req := httptest.NewRequest("POST", "/ws", nil)
 	w := httptest.NewRecorder()
@@ -93,8 +107,9 @@ func TestWebSocketHandlerContentType(t *testing.T) {
 	}
 }
 
-// TestWebSocketUpgraderConfiguration tests that the upgrader is properly configured
-// Note: This is more of an integration test, but we'll keep it simple
+// TestWebSocketUpgraderConfiguration tests that the upgrader is properly configured.
+// It verifies that requests with proper WebSocket headers are handled appropriately,
+// either succeeding with a protocol switch or failing with an appropriate error.
 func TestWebSocketUpgraderConfiguration(t *testing.T) {
 	// Create a GET request with proper WebSocket headers
 	req := httptest.NewRequest("GET", "/ws", nil)
@@ -115,6 +130,9 @@ func TestWebSocketUpgraderConfiguration(t *testing.T) {
 	}
 }
 
+// TestWebSocketHandlerWithValidHeaders tests the WebSocket handler with valid WebSocket headers.
+// It verifies that requests with proper WebSocket upgrade headers are not rejected
+// with a Method Not Allowed status, ensuring the handler recognizes valid WebSocket requests.
 func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
 	req := httptest.NewRequest("GET", "/ws", nil)
 
@@ -136,6 +154,9 @@ func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
 	}
 }
 
+// TestStartHub tests that the StartHub function executes without panicking.
+// It verifies that the hub can be started successfully and runs in the background
+// without encountering runtime errors during initialization.
 func TestStartHub(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
