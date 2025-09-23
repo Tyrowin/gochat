@@ -21,6 +21,7 @@ package server
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -121,7 +122,7 @@ func (h *Hub) safeSend(client *Client, message []byte) bool {
 	// Hold the lock during the entire send operation to prevent race conditions
 	h.mutex.RLock()
 	defer h.mutex.RUnlock()
-	
+
 	// Check if client is still registered and not closed
 	_, exists := h.clients[client]
 	if !exists || client.closed {
@@ -242,65 +243,120 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(54 * time.Second)
 	defer func() {
 		ticker.Stop()
-		if err := c.conn.Close(); err != nil {
-			// Only log unexpected connection close errors
-			if !isExpectedCloseError(err) {
-				log.Printf("Error closing connection in writePump: %v", err)
-			}
-		}
+		c.closeConnection()
 	}()
 
 	for {
 		select {
 		case message, ok := <-c.send:
-			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				log.Printf("Error setting write deadline: %v", err)
+			if !c.handleMessage(message, ok) {
 				return
 			}
-			if !ok {
-				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
-					if !isExpectedCloseError(err) {
-						log.Printf("Error writing close message: %v", err)
-					}
-				}
-				return
-			}
-
-			w, err := c.conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			if _, err := w.Write(message); err != nil {
-				log.Printf("Error writing message: %v", err)
-				return
-			}
-
-			n := len(c.send)
-			for i := 0; i < n; i++ {
-				if _, err := w.Write([]byte{'\n'}); err != nil {
-					log.Printf("Error writing newline: %v", err)
-					return
-				}
-				if _, err := w.Write(<-c.send); err != nil {
-					log.Printf("Error writing queued message: %v", err)
-					return
-				}
-			}
-
-			if err := w.Close(); err != nil {
-				return
-			}
-
 		case <-ticker.C:
-			if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				log.Printf("Error setting write deadline for ping: %v", err)
-				return
-			}
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if !c.handlePing() {
 				return
 			}
 		}
 	}
+}
+
+// closeConnection safely closes the WebSocket connection with proper error handling
+func (c *Client) closeConnection() {
+	if err := c.conn.Close(); err != nil {
+		// Only log unexpected connection close errors
+		if !isExpectedCloseError(err) {
+			log.Printf("Error closing connection in writePump: %v", err)
+		}
+	}
+}
+
+// handleMessage processes outgoing messages and returns false if the connection should be closed
+func (c *Client) handleMessage(message []byte, ok bool) bool {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		log.Printf("Error setting write deadline: %v", err)
+		return false
+	}
+
+	if !ok {
+		return c.writeCloseMessage()
+	}
+
+	return c.writeTextMessage(message)
+}
+
+// writeCloseMessage sends a close message to the client
+func (c *Client) writeCloseMessage() bool {
+	if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
+		if !isExpectedCloseError(err) {
+			log.Printf("Error writing close message: %v", err)
+		}
+	}
+	return false
+}
+
+// writeTextMessage writes a text message and any queued messages
+func (c *Client) writeTextMessage(message []byte) bool {
+	w, err := c.conn.NextWriter(websocket.TextMessage)
+	if err != nil {
+		return false
+	}
+
+	if !c.writeMessageContent(w, message) {
+		return false
+	}
+
+	if !c.writeQueuedMessages(w) {
+		return false
+	}
+
+	return c.closeWriter(w)
+}
+
+// writeMessageContent writes the main message content
+func (c *Client) writeMessageContent(w io.WriteCloser, message []byte) bool {
+	if _, err := w.Write(message); err != nil {
+		log.Printf("Error writing message: %v", err)
+		return false
+	}
+	return true
+}
+
+// writeQueuedMessages writes any additional queued messages
+func (c *Client) writeQueuedMessages(w io.WriteCloser) bool {
+	n := len(c.send)
+	for i := 0; i < n; i++ {
+		if !c.writeQueuedMessage(w) {
+			return false
+		}
+	}
+	return true
+}
+
+// writeQueuedMessage writes a single queued message with newline separator
+func (c *Client) writeQueuedMessage(w io.WriteCloser) bool {
+	if _, err := w.Write([]byte{'\n'}); err != nil {
+		log.Printf("Error writing newline: %v", err)
+		return false
+	}
+	if _, err := w.Write(<-c.send); err != nil {
+		log.Printf("Error writing queued message: %v", err)
+		return false
+	}
+	return true
+}
+
+// closeWriter closes the message writer
+func (c *Client) closeWriter(w io.WriteCloser) bool {
+	return w.Close() == nil
+}
+
+// handlePing sends a ping message to keep the connection alive
+func (c *Client) handlePing() bool {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		log.Printf("Error setting write deadline for ping: %v", err)
+		return false
+	}
+	return c.conn.WriteMessage(websocket.PingMessage, nil) == nil
 }
 
 var hub = NewHub()

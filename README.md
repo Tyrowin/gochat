@@ -1,5 +1,10 @@
 # GoChat
 
+[![CI Pipeline](https://github.com/Tyrowin/gochat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Tyrowin/gochat/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/Tyrowin/gochat)](https://golang.org/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Tyrowin/gochat)](https://goreportcard.com/report/github.com/Tyrowin/gochat)
+
 High-performance, standalone, multi-client chat server built using Go and WebSockets.
 
 ## Features
