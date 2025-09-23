@@ -23,20 +23,33 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
+// isExpectedCloseError checks if an error is expected during connection closure
+func isExpectedCloseError(err error) bool {
+	if err == nil {
+		return true
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "use of closed network connection") ||
+		strings.Contains(errStr, "websocket: close sent") ||
+		strings.Contains(errStr, "broken pipe")
+}
+
 // Client represents a WebSocket client connection in the chat system.
 // It manages the connection state, message sending channel, hub reference,
 // and client address information.
 type Client struct {
-	conn *websocket.Conn
-	send chan []byte
-	hub  *Hub
-	addr string
+	conn   *websocket.Conn
+	send   chan []byte
+	hub    *Hub
+	addr   string
+	closed bool
 }
 
 // Hub manages all WebSocket client connections and handles message broadcasting.
@@ -66,10 +79,11 @@ func NewHub() *Hub {
 // to handle message queuing.
 func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 	return &Client{
-		conn: conn,
-		send: make(chan []byte, 256),
-		hub:  hub,
-		addr: addr,
+		conn:   conn,
+		send:   make(chan []byte, 256),
+		hub:    hub,
+		addr:   addr,
+		closed: false,
 	}
 }
 
@@ -104,15 +118,17 @@ func (h *Hub) safeSend(client *Client, message []byte) bool {
 		}
 	}()
 
-	// Check if client is still registered before sending
+	// Hold the lock during the entire send operation to prevent race conditions
 	h.mutex.RLock()
+	defer h.mutex.RUnlock()
+	
+	// Check if client is still registered and not closed
 	_, exists := h.clients[client]
-	h.mutex.RUnlock()
-
-	if !exists {
+	if !exists || client.closed {
 		return false
 	}
 
+	// Try to send the message (channel might be closed, so we need to recover from panic)
 	select {
 	case client.send <- message:
 		return true
@@ -138,10 +154,11 @@ func (h *Hub) Run() {
 			h.mutex.Lock()
 			if _, ok := h.clients[client]; ok {
 				delete(h.clients, client)
+				client.closed = true
 				clientCount := len(h.clients)
-				// Close the channel while holding the lock to prevent race conditions
-				close(client.send)
 				h.mutex.Unlock()
+				// Close the channel after releasing the lock
+				close(client.send)
 				log.Printf("Client unregistered from %s. Total clients: %d", client.addr, clientCount)
 			} else {
 				h.mutex.Unlock()
@@ -168,14 +185,20 @@ func (h *Hub) Run() {
 
 			if len(clientsToRemove) > 0 {
 				h.mutex.Lock()
+				var channelsToClose []chan []byte
 				for _, client := range clientsToRemove {
 					if _, exists := h.clients[client]; exists {
 						delete(h.clients, client)
-						close(client.send)
+						client.closed = true
+						channelsToClose = append(channelsToClose, client.send)
 						log.Printf("Client from %s removed due to full send buffer", client.addr)
 					}
 				}
 				h.mutex.Unlock()
+				// Close channels after releasing the lock
+				for _, ch := range channelsToClose {
+					close(ch)
+				}
 			}
 		}
 	}
@@ -185,7 +208,9 @@ func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
 		if err := c.conn.Close(); err != nil {
-			log.Printf("Error closing connection in readPump: %v", err)
+			if !isExpectedCloseError(err) {
+				log.Printf("Error closing connection in readPump: %v", err)
+			}
 		}
 	}()
 
@@ -218,7 +243,10 @@ func (c *Client) writePump() {
 	defer func() {
 		ticker.Stop()
 		if err := c.conn.Close(); err != nil {
-			log.Printf("Error closing connection in writePump: %v", err)
+			// Only log unexpected connection close errors
+			if !isExpectedCloseError(err) {
+				log.Printf("Error closing connection in writePump: %v", err)
+			}
 		}
 	}()
 
@@ -231,7 +259,9 @@ func (c *Client) writePump() {
 			}
 			if !ok {
 				if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
-					log.Printf("Error writing close message: %v", err)
+					if !isExpectedCloseError(err) {
+						log.Printf("Error writing close message: %v", err)
+					}
 				}
 				return
 			}
@@ -298,12 +328,7 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &Client{
-		conn: conn,
-		send: make(chan []byte, 256),
-		hub:  hub,
-		addr: r.RemoteAddr,
-	}
+	client := NewClient(conn, hub, r.RemoteAddr)
 
 	client.hub.register <- client
 	go client.writePump()

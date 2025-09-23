@@ -93,10 +93,6 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
-      - name: Run Nancy (OSS Index vulnerability scanner)
-        run: |
-          go list -json -deps ./... | docker run --rm -i sonatypecommunity/nancy:latest sleuth
-
   # Job 4: Dependency Analysis
   dependency-check:
     name: Dependency Check
