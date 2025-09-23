@@ -1,4 +1,8 @@
-// Package testhelpers provides common utilities for testing the nexus-chat-server
+// Package testhelpers provides common utilities and helper functions for testing the GoChat server.
+//
+// This package contains reusable test utilities that are shared across unit and integration tests.
+// It provides functions for creating test servers, making HTTP requests, and asserting response
+// properties to reduce code duplication in test files.
 package testhelpers
 
 import (
@@ -8,12 +12,15 @@ import (
 	"time"
 )
 
-// CreateTestServer creates a test HTTP server with the given handler
+// CreateTestServer creates a test HTTP server with the given handler.
+// It returns a running httptest.Server that should be closed after use.
 func CreateTestServer(handler http.Handler) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
-// CreateTestServerWithConfig creates a test server with custom configuration
+// CreateTestServerWithConfig creates a test server with custom timeout configuration.
+// It allows specifying custom read, write, and idle timeouts for testing server behavior
+// under different timeout conditions.
 func CreateTestServerWithConfig(
 	handler http.Handler,
 	readTimeout, writeTimeout, idleTimeout time.Duration,
@@ -31,7 +38,8 @@ func CreateTestServerWithConfig(
 	return testServer
 }
 
-// AssertStatusCode checks if the response has the expected status code
+// AssertStatusCode checks if the HTTP response has the expected status code.
+// It fails the test with a descriptive error message if the status codes don't match.
 func AssertStatusCode(t *testing.T, resp *http.Response, expected int) {
 	t.Helper()
 	if resp.StatusCode != expected {
@@ -39,7 +47,8 @@ func AssertStatusCode(t *testing.T, resp *http.Response, expected int) {
 	}
 }
 
-// AssertContentType checks if the response has the expected content type
+// AssertContentType checks if the HTTP response has the expected Content-Type header.
+// It fails the test with a descriptive error message if the content types don't match.
 func AssertContentType(t *testing.T, resp *http.Response, expected string) {
 	t.Helper()
 	contentType := resp.Header.Get("Content-Type")
@@ -48,7 +57,9 @@ func AssertContentType(t *testing.T, resp *http.Response, expected string) {
 	}
 }
 
-// CreateHealthHandler creates the standard health check handler
+// CreateHealthHandler creates the standard health check handler for testing purposes.
+// It returns an HTTP handler function that responds with a health check message,
+// including proper error handling for write operations.
 func CreateHealthHandler() http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -59,7 +70,9 @@ func CreateHealthHandler() http.HandlerFunc {
 	})
 }
 
-// MakeRequest creates and executes an HTTP request, returning the response
+// MakeRequest creates and executes an HTTP request, returning the response.
+// It includes a 5-second timeout and fails the test if the request cannot be
+// created or executed successfully.
 func MakeRequest(t *testing.T, method, url string) *http.Response {
 	t.Helper()
 

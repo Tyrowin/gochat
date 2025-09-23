@@ -1,3 +1,9 @@
+// Package integration contains integration tests for the GoChat server.
+//
+// These tests verify that multiple components work together correctly by testing
+// the complete system behavior with real HTTP servers, WebSocket connections,
+// and end-to-end functionality. Integration tests ensure that the system works
+// as expected when all components are assembled together.
 package integration
 
 import (
@@ -9,7 +15,9 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 )
 
-// TestHealthEndpointIntegration tests the health endpoint with the actual server configuration
+// TestHealthEndpointIntegration tests the health endpoint with the actual server configuration.
+// It verifies that the complete server setup including routing, handlers, and HTTP responses
+// work correctly together in a real server environment.
 func TestHealthEndpointIntegration(t *testing.T) {
 	// Use the actual server setup from our server package
 	mux := server.SetupRoutes()
@@ -38,7 +46,9 @@ func TestHealthEndpointIntegration(t *testing.T) {
 	}
 }
 
-// TestServerTimeouts tests that the server has proper timeout configurations
+// TestServerTimeouts tests that the server has proper timeout configurations.
+// It verifies that the server is configured with appropriate timeout values
+// for production use by testing slow endpoints and timeout behavior.
 func TestServerTimeouts(t *testing.T) {
 	// Create a test route that simulates slow responses
 	testMux := http.NewServeMux()
@@ -73,7 +83,9 @@ func TestServerTimeouts(t *testing.T) {
 	}
 }
 
-// TestServerSecurity tests basic security configurations
+// TestServerSecurity tests basic security configurations of the server.
+// It verifies that the server responds appropriately to valid requests
+// and handles non-existent endpoints correctly.
 func TestServerSecurity(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -109,7 +121,9 @@ func TestServerSecurity(t *testing.T) {
 	}
 }
 
-// TestFullServerIntegration tests the complete server setup using our server package
+// TestFullServerIntegration tests the complete server setup using the server package.
+// It verifies that all components work together correctly including configuration,
+// routing, handlers, and server settings in a full integration scenario.
 func TestFullServerIntegration(t *testing.T) {
 	// Use the actual server configuration
 	config := server.NewConfig()

@@ -1,4 +1,19 @@
-// Package main implements the entry point for the GoChat server.
+/*
+GoChat is a real-time WebSocket-based chat server.
+
+The server provides WebSocket endpoints for real-time communication
+and includes a built-in test page for development and testing.
+
+Usage:
+
+	gochat
+
+The server will start on port 8080 by default and provide the following endpoints:
+
+  - / - Health check endpoint
+  - /ws - WebSocket endpoint for chat connections
+  - /test - HTML test page for WebSocket functionality
+*/
 package main
 
 import (
@@ -11,13 +26,9 @@ import (
 func main() {
 	fmt.Println("Starting GoChat server...")
 
-	// Create configuration
 	config := server.NewConfig()
-
-	// Setup routes
+	server.StartHub()
 	mux := server.SetupRoutes()
-
-	// Create and start server
 	httpServer := server.CreateServer(config.Port, mux)
 
 	log.Fatal(server.StartServer(httpServer))
