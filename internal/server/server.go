@@ -20,6 +20,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -53,12 +54,24 @@ type Client struct {
 	closed bool
 }
 
+// Message represents the V1 JSON message format exchanged between clients.
+type Message struct {
+	Content string `json:"content"`
+}
+
+// BroadcastMessage encapsulates a message being broadcast by the hub,
+// including the originating client so it can be excluded from delivery.
+type BroadcastMessage struct {
+	Sender  *Client
+	Payload []byte
+}
+
 // Hub manages all WebSocket client connections and handles message broadcasting.
 // It maintains client registration/unregistration and ensures thread-safe operations
 // through mutex protection.
 type Hub struct {
 	clients    map[*Client]bool
-	broadcast  chan []byte
+	broadcast  chan BroadcastMessage
 	register   chan *Client
 	unregister chan *Client
 	mutex      sync.RWMutex
@@ -69,7 +82,7 @@ type Hub struct {
 func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte),
+		broadcast:  make(chan BroadcastMessage),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 	}
@@ -102,7 +115,7 @@ func (h *Hub) GetUnregisterChan() chan<- *Client {
 
 // GetBroadcastChan returns the channel used for broadcasting messages to all clients.
 // This channel is write-only from the caller's perspective.
-func (h *Hub) GetBroadcastChan() chan<- []byte {
+func (h *Hub) GetBroadcastChan() chan<- BroadcastMessage {
 	return h.broadcast
 }
 
@@ -145,11 +158,20 @@ func (h *Hub) Run() {
 	for {
 		select {
 		case client := <-h.register:
+			if client == nil {
+				log.Printf("Received nil client registration; skipping")
+				continue
+			}
+
 			h.mutex.Lock()
+			client.closed = false
 			h.clients[client] = true
 			clientCount := len(h.clients)
 			h.mutex.Unlock()
 			log.Printf("Client registered from %s. Total clients: %d", client.addr, clientCount)
+
+			go client.writePump()
+			go client.readPump()
 
 		case client := <-h.unregister:
 			h.mutex.Lock()
@@ -165,7 +187,7 @@ func (h *Hub) Run() {
 				h.mutex.Unlock()
 			}
 
-		case message := <-h.broadcast:
+		case broadcastMsg := <-h.broadcast:
 			h.mutex.RLock()
 			clientCount := len(h.clients)
 			clients := make([]*Client, 0, clientCount)
@@ -174,12 +196,23 @@ func (h *Hub) Run() {
 			}
 			h.mutex.RUnlock()
 
-			log.Printf("Broadcasting message to %d clients", clientCount)
+			targetCount := clientCount
+			if broadcastMsg.Sender != nil {
+				targetCount--
+			}
+			if targetCount < 0 {
+				targetCount = 0
+			}
+
+			log.Printf("Broadcasting message to %d clients", targetCount)
 
 			var clientsToRemove []*Client
 
 			for _, client := range clients {
-				if !h.safeSend(client, message) {
+				if broadcastMsg.Sender != nil && client == broadcastMsg.Sender {
+					continue
+				}
+				if !h.safeSend(client, broadcastMsg.Payload) {
 					clientsToRemove = append(clientsToRemove, client)
 				}
 			}
@@ -226,7 +259,7 @@ func (c *Client) readPump() {
 	})
 
 	for {
-		_, message, err := c.conn.ReadMessage()
+		_, rawMessage, err := c.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 				log.Printf("WebSocket error from %s: %v", c.addr, err)
@@ -234,8 +267,20 @@ func (c *Client) readPump() {
 			break
 		}
 
-		log.Printf("Received message from %s: %s", c.addr, string(message))
-		c.hub.broadcast <- message
+		var msg Message
+		if err := json.Unmarshal(rawMessage, &msg); err != nil {
+			log.Printf("Invalid message from %s: %v", c.addr, err)
+			continue
+		}
+
+		normalizedMessage, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("Error normalizing message from %s: %v", c.addr, err)
+			continue
+		}
+
+		log.Printf("Received message from %s: %s", c.addr, string(normalizedMessage))
+		c.hub.broadcast <- BroadcastMessage{Sender: c, Payload: normalizedMessage}
 	}
 }
 
@@ -387,9 +432,8 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 
 	client := NewClient(conn, hub, r.RemoteAddr)
 
+	// Register the client with the hub; the hub will launch the pump goroutines.
 	client.hub.register <- client
-	go client.writePump()
-	client.readPump()
 }
 
 // HealthHandler provides a simple health check endpoint that returns server status.

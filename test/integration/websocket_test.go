@@ -8,6 +8,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +21,39 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 	"github.com/gorilla/websocket"
 )
+
+func mustMarshalMessage(t *testing.T, content string) []byte {
+	if t == nil {
+		panic("testing.T is required")
+	}
+	t.Helper()
+	payload, err := json.Marshal(server.Message{Content: content})
+	if err != nil {
+		t.Fatalf("Failed to marshal message: %v", err)
+	}
+	return payload
+}
+
+func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) {
+	t.Helper()
+	if conn == nil {
+		t.Fatalf("nil connection provided to expectNoMessage")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("Failed to set read deadline: %v", err)
+	}
+	_, _, err := conn.ReadMessage()
+	if err == nil {
+		t.Fatalf("Expected no message, but received one")
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return
+	}
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return
+	}
+	t.Fatalf("Unexpected error while waiting for absence of message: %v", err)
+}
 
 // TestWebSocketEndpointIntegration tests the WebSocket endpoint with full server integration.
 // It verifies that WebSocket connections can be established, messages can be sent and received,
@@ -49,7 +85,7 @@ func TestWebSocketEndpointIntegration(t *testing.T) {
 		}
 
 		testMessage := "Hello, WebSocket!"
-		err = conn.WriteMessage(websocket.TextMessage, []byte(testMessage))
+		err = conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, testMessage))
 		if err != nil {
 			t.Errorf("Failed to send message: %v", err)
 		}
@@ -118,22 +154,18 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Send a message from the first client
-	testMessage := "Hello from client 0!"
-	err = connections[0].WriteMessage(websocket.TextMessage, []byte(testMessage))
-	if err != nil {
+	messageContent := "Hello from client 0!"
+	if err := connections[0].WriteMessage(websocket.TextMessage, mustMarshalMessage(t, messageContent)); err != nil {
 		t.Fatalf("Failed to send message from client 0: %v", err)
 	}
 
 	// Check that all other clients receive the message
 	for i := 1; i < numClients; i++ {
-		// Set a read deadline
-		err = connections[i].SetReadDeadline(time.Now().Add(2 * time.Second))
-		if err != nil {
+		if err := connections[i].SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 			t.Errorf("Failed to set read deadline for client %d: %v", i, err)
 			continue
 		}
 
-		// Read the broadcasted message
 		messageType, message, err := connections[i].ReadMessage()
 		if err != nil {
 			t.Errorf("Client %d failed to receive broadcasted message: %v", i, err)
@@ -144,9 +176,30 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 			t.Errorf("Client %d: Expected text message, got type %d", i, messageType)
 		}
 
-		if string(message) != testMessage {
-			t.Errorf("Client %d: Expected message %q, got %q", i, testMessage, string(message))
+		var received server.Message
+		if err := json.Unmarshal(message, &received); err != nil {
+			t.Errorf("Client %d: Failed to unmarshal message: %v", i, err)
+			continue
 		}
+
+		if received.Content != messageContent {
+			t.Errorf("Client %d: Expected content %q, got %q", i, messageContent, received.Content)
+		}
+	}
+
+	// Ensure the sender does not receive its own message
+	expectNoMessage(t, connections[0], 200*time.Millisecond)
+
+	// Send malformed JSON from another client and ensure it is ignored
+	if err := connections[1].WriteMessage(websocket.TextMessage, []byte("not valid json")); err != nil {
+		t.Fatalf("Failed to send malformed message: %v", err)
+	}
+
+	for i := 0; i < numClients; i++ {
+		if i == 1 {
+			continue
+		}
+		expectNoMessage(t, connections[i], 150*time.Millisecond)
 	}
 
 	// Close all connections gracefully
@@ -205,8 +258,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 
 			// Send a test message
 			testMsg := "Test message " + string(rune('A'+i))
-			err = conn.WriteMessage(websocket.TextMessage, []byte(testMsg))
-			if err != nil {
+			if err := conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, testMsg)); err != nil {
 				t.Errorf("Failed to send message on iteration %d: %v", i, err)
 			}
 
@@ -245,27 +297,31 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 
 	// Start multiple clients concurrently
 	for i := 0; i < numConcurrentClients; i++ {
-		go func(clientID int) {
+		message := "Message from client " + string(rune('0'+i))
+		payload, err := json.Marshal(server.Message{Content: message})
+		if err != nil {
+			t.Fatalf("Failed to marshal message for client %d: %v", i, err)
+		}
+
+		go func(clientID int, msgPayload []byte) {
 			defer func() {
 				if r := recover(); r != nil {
-					done <- err
+					done <- fmt.Errorf("client %d panic: %v", clientID, r)
 				}
 			}()
 
 			// Connect
 			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
 			if err != nil {
-				done <- err
+				done <- fmt.Errorf("client %d dial: %w", clientID, err)
 				return
 			}
 			defer func() { _ = conn.Close() }()
 			defer func() { _ = resp.Body.Close() }()
 
 			// Send a message
-			message := "Message from client " + string(rune('0'+clientID))
-			err = conn.WriteMessage(websocket.TextMessage, []byte(message))
-			if err != nil {
-				done <- err
+			if err := conn.WriteMessage(websocket.TextMessage, msgPayload); err != nil {
+				done <- fmt.Errorf("client %d write: %w", clientID, err)
 				return
 			}
 
@@ -291,7 +347,7 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 
 			<-ctx.Done()
 			done <- nil
-		}(i)
+		}(i, payload)
 	}
 
 	// Wait for all clients to complete
