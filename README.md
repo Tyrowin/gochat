@@ -187,8 +187,16 @@ gochat/
 │   └── server/          # Application entry point
 │       └── main.go
 ├── internal/            # Private application code
-│   ├── client/          # Client connection handling
-│   └── hub/             # Chat hub and message routing
+│   └── server/          # Core HTTP/WebSocket server components
+│       ├── client.go        # WebSocket client connection management
+│       ├── config.go        # Runtime configuration and security controls
+│       ├── handlers.go      # HTTP and WebSocket request handlers
+│       ├── hub.go           # Client registry and broadcast coordination
+│       ├── http_server.go   # HTTP server setup helpers
+│       ├── origin.go        # Origin validation helpers
+│       ├── rate_limiter.go  # Per-connection rate limiting
+│       ├── routes.go        # Route registration
+│       └── types.go         # Shared message and utility types
 ├── .github/
 │   └── workflows/
 │       └── ci.yml       # GitHub Actions CI pipeline
