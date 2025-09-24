@@ -86,7 +86,7 @@ func TestHubBroadcastChannel(t *testing.T) {
 	testMessage := []byte("test broadcast")
 
 	select {
-	case hub.GetBroadcastChan() <- testMessage:
+	case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: testMessage}:
 	case <-time.After(100 * time.Millisecond):
 		t.Error("Failed to send message to broadcast channel")
 	}
@@ -149,7 +149,7 @@ func TestConcurrentHubOperations(t *testing.T) {
 
 			message := []byte("concurrent message")
 			select {
-			case hub.GetBroadcastChan() <- message:
+			case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: message}:
 			case <-time.After(100 * time.Millisecond):
 			}
 		}(i)
