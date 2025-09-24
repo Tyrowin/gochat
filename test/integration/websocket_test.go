@@ -9,6 +9,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -22,10 +23,10 @@ import (
 )
 
 func mustMarshalMessage(t *testing.T, content string) []byte {
-	t.Helper()
 	if t == nil {
 		panic("testing.T is required")
 	}
+	t.Helper()
 	payload, err := json.Marshal(server.Message{Content: content})
 	if err != nil {
 		t.Fatalf("Failed to marshal message: %v", err)
@@ -305,14 +306,14 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 		go func(clientID int, msgPayload []byte) {
 			defer func() {
 				if r := recover(); r != nil {
-					done <- err
+					done <- fmt.Errorf("client %d panic: %v", clientID, r)
 				}
 			}()
 
 			// Connect
 			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
 			if err != nil {
-				done <- err
+				done <- fmt.Errorf("client %d dial: %w", clientID, err)
 				return
 			}
 			defer func() { _ = conn.Close() }()
@@ -320,7 +321,7 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 
 			// Send a message
 			if err := conn.WriteMessage(websocket.TextMessage, msgPayload); err != nil {
-				done <- err
+				done <- fmt.Errorf("client %d write: %w", clientID, err)
 				return
 			}
 
