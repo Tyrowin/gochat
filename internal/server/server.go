@@ -21,10 +21,12 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -47,11 +49,14 @@ func isExpectedCloseError(err error) bool {
 // It manages the connection state, message sending channel, hub reference,
 // and client address information.
 type Client struct {
-	conn   *websocket.Conn
-	send   chan []byte
-	hub    *Hub
-	addr   string
-	closed bool
+	conn           *websocket.Conn
+	send           chan []byte
+	hub            *Hub
+	addr           string
+	closed         bool
+	maxMessageSize int64
+	rateLimiter    *rateLimiter
+	rateLimit      RateLimitConfig
 }
 
 // Message represents the V1 JSON message format exchanged between clients.
@@ -64,6 +69,235 @@ type Message struct {
 type BroadcastMessage struct {
 	Sender  *Client
 	Payload []byte
+}
+
+// RateLimitConfig defines the parameters for per-connection message rate limiting.
+type RateLimitConfig struct {
+	Burst          int
+	RefillInterval time.Duration
+}
+
+// Config holds the server configuration settings including security controls.
+type Config struct {
+	Port           string
+	AllowedOrigins []string
+	MaxMessageSize int64
+	RateLimit      RateLimitConfig
+}
+
+var (
+	configMu        sync.RWMutex
+	activeConfig    Config
+	allowedOrigins  map[string]struct{}
+	allowAllOrigins bool
+)
+
+func init() {
+	SetConfig(nil)
+}
+
+func defaultConfig() Config {
+	return Config{
+		Port: ":8080",
+		AllowedOrigins: []string{
+			"http://localhost:8080",
+		},
+		MaxMessageSize: 512,
+		RateLimit: RateLimitConfig{
+			Burst:          5,
+			RefillInterval: time.Second,
+		},
+	}
+}
+
+func sanitizeConfig(cfg Config) Config {
+	if cfg.Port == "" {
+		cfg.Port = ":8080"
+	}
+
+	if cfg.MaxMessageSize <= 0 {
+		cfg.MaxMessageSize = 512
+	}
+
+	if cfg.RateLimit.Burst <= 0 {
+		cfg.RateLimit.Burst = 5
+	}
+
+	if cfg.RateLimit.RefillInterval <= 0 {
+		cfg.RateLimit.RefillInterval = time.Second
+	}
+
+	normalizedOrigins, allowAll := normalizeOrigins(cfg.AllowedOrigins)
+	cfg.AllowedOrigins = normalizedOrigins
+
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	activeConfig = cfg
+	allowAllOrigins = allowAll
+	allowedOrigins = make(map[string]struct{}, len(normalizedOrigins))
+	for _, origin := range normalizedOrigins {
+		allowedOrigins[origin] = struct{}{}
+	}
+
+	return cfg
+}
+
+// SetConfig applies the provided configuration. Passing nil resets to defaults.
+func SetConfig(cfg *Config) {
+	if cfg == nil {
+		defaultCfg := defaultConfig()
+		sanitizeConfig(defaultCfg)
+		return
+	}
+
+	sanitized := Config{
+		Port:           cfg.Port,
+		AllowedOrigins: append([]string(nil), cfg.AllowedOrigins...),
+		MaxMessageSize: cfg.MaxMessageSize,
+		RateLimit: RateLimitConfig{
+			Burst:          cfg.RateLimit.Burst,
+			RefillInterval: cfg.RateLimit.RefillInterval,
+		},
+	}
+	sanitizeConfig(sanitized)
+}
+
+func currentConfig() Config {
+	configMu.RLock()
+	defer configMu.RUnlock()
+
+	cfg := activeConfig
+	cfg.AllowedOrigins = append([]string(nil), cfg.AllowedOrigins...)
+	return cfg
+}
+
+func normalizeOrigins(origins []string) ([]string, bool) {
+	if len(origins) == 0 {
+		return nil, false
+	}
+
+	normalized := make([]string, 0, len(origins))
+	allowAll := false
+
+	for _, origin := range origins {
+		trimmed := strings.TrimSpace(origin)
+		if trimmed == "" {
+			continue
+		}
+
+		if trimmed == "*" {
+			allowAll = true
+			continue
+		}
+
+		normalizedOrigin, ok := normalizeOrigin(trimmed)
+		if !ok {
+			log.Printf("Ignoring invalid origin in configuration: %q", origin)
+			continue
+		}
+
+		normalized = append(normalized, normalizedOrigin)
+	}
+
+	return normalized, allowAll
+}
+
+func normalizeOrigin(origin string) (string, bool) {
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return "", false
+	}
+
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", false
+	}
+
+	normalized := fmt.Sprintf("%s://%s", strings.ToLower(parsed.Scheme), strings.ToLower(parsed.Host))
+	return normalized, true
+}
+
+func isOriginAllowed(r *http.Request) bool {
+	originHeader := r.Header.Get("Origin")
+	if originHeader == "" {
+		return false
+	}
+
+	normalizedOrigin, ok := normalizeOrigin(originHeader)
+	if !ok {
+		return false
+	}
+
+	configMu.RLock()
+	defer configMu.RUnlock()
+
+	if allowAllOrigins {
+		return true
+	}
+
+	_, exists := allowedOrigins[normalizedOrigin]
+	return exists
+}
+
+func checkOrigin(r *http.Request) bool {
+	if isOriginAllowed(r) {
+		return true
+	}
+
+	log.Printf("Blocked WebSocket connection from disallowed origin: %q", r.Header.Get("Origin"))
+	return false
+}
+
+type rateLimiter struct {
+	mu        sync.Mutex
+	tokens    float64
+	capacity  float64
+	rate      float64
+	lastCheck time.Time
+}
+
+func newRateLimiter(capacity int, interval time.Duration) *rateLimiter {
+	if capacity <= 0 {
+		capacity = 1
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	rate := float64(capacity) / interval.Seconds()
+	if rate <= 0 {
+		rate = float64(capacity)
+	}
+
+	return &rateLimiter{
+		tokens:    float64(capacity),
+		capacity:  float64(capacity),
+		rate:      rate,
+		lastCheck: time.Now(),
+	}
+}
+
+func (rl *rateLimiter) allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(rl.lastCheck).Seconds()
+	rl.lastCheck = now
+
+	if elapsed > 0 {
+		rl.tokens += elapsed * rl.rate
+		if rl.tokens > rl.capacity {
+			rl.tokens = rl.capacity
+		}
+	}
+
+	if rl.tokens < 1 {
+		return false
+	}
+
+	rl.tokens -= 1
+	return true
 }
 
 // Hub manages all WebSocket client connections and handles message broadcasting.
@@ -92,12 +326,21 @@ func NewHub() *Hub {
 // hub reference, and client address. The client's send channel is buffered
 // to handle message queuing.
 func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
+	cfg := currentConfig()
+	if conn != nil {
+		conn.SetReadLimit(cfg.MaxMessageSize)
+	}
+	limiter := newRateLimiter(cfg.RateLimit.Burst, cfg.RateLimit.RefillInterval)
+
 	return &Client{
-		conn:   conn,
-		send:   make(chan []byte, 256),
-		hub:    hub,
-		addr:   addr,
-		closed: false,
+		conn:           conn,
+		send:           make(chan []byte, 256),
+		hub:            hub,
+		addr:           addr,
+		closed:         false,
+		maxMessageSize: cfg.MaxMessageSize,
+		rateLimiter:    limiter,
+		rateLimit:      cfg.RateLimit,
 	}
 }
 
@@ -261,10 +504,17 @@ func (c *Client) readPump() {
 	for {
 		_, rawMessage, err := c.conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+			if errors.Is(err, websocket.ErrReadLimit) {
+				log.Printf("Message from %s exceeded maximum size of %d bytes", c.addr, c.maxMessageSize)
+			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseMessageTooBig) {
 				log.Printf("WebSocket error from %s: %v", c.addr, err)
 			}
 			break
+		}
+
+		if c.rateLimiter != nil && !c.rateLimiter.allow() {
+			log.Printf("Rate limit exceeded for %s (%d messages per %s); discarding message", c.addr, c.rateLimit.Burst, c.rateLimit.RefillInterval)
+			continue
 		}
 
 		var msg Message
@@ -410,9 +660,7 @@ var hub = NewHub()
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin: func(_ *http.Request) bool {
-		return true
-	},
+	CheckOrigin:     checkOrigin,
 }
 
 // WebSocketHandler handles WebSocket upgrade requests and manages client connections.
@@ -623,18 +871,10 @@ func CreateServer(port string, handler http.Handler) *http.Server {
 	}
 }
 
-// Config holds the server configuration settings.
-// Currently it only contains the port configuration.
-type Config struct {
-	Port string
-}
-
-// NewConfig creates a new Config instance with default values.
-// The default port is set to :8080.
+// NewConfig creates a Config instance populated with default values for all settings.
 func NewConfig() *Config {
-	return &Config{
-		Port: ":8080",
-	}
+	cfg := defaultConfig()
+	return &cfg
 }
 
 // StartHub initializes and starts the global hub in a separate goroutine.

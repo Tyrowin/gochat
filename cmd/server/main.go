@@ -27,6 +27,7 @@ func main() {
 	fmt.Println("Starting GoChat server...")
 
 	config := server.NewConfig()
+	server.SetConfig(config)
 	server.StartHub()
 	mux := server.SetupRoutes()
 	httpServer := server.CreateServer(config.Port, mux)

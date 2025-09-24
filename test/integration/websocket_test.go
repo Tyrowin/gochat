@@ -55,6 +55,30 @@ func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) 
 	t.Fatalf("Unexpected error while waiting for absence of message: %v", err)
 }
 
+func configureServerForTest(t *testing.T, baseURL string, customize func(cfg *server.Config)) {
+	if t == nil {
+		panic("testing.T is required")
+	}
+	t.Helper()
+	cfg := server.NewConfig()
+	cfg.AllowedOrigins = append([]string{baseURL}, cfg.AllowedOrigins...)
+	if customize != nil {
+		customize(cfg)
+	}
+	server.SetConfig(cfg)
+	t.Cleanup(func() {
+		server.SetConfig(nil)
+	})
+}
+
+func newOriginHeader(origin string) http.Header {
+	header := http.Header{}
+	if origin != "" {
+		header.Set("Origin", origin)
+	}
+	return header
+}
+
 // TestWebSocketEndpointIntegration tests the WebSocket endpoint with full server integration.
 // It verifies that WebSocket connections can be established, messages can be sent and received,
 // and the complete WebSocket functionality works in a real server environment.
@@ -64,7 +88,7 @@ func TestWebSocketEndpointIntegration(t *testing.T) {
 	mux := server.SetupRoutes()
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
-
+	configureServerForTest(t, testServer.URL, nil)
 	u, err := url.Parse(testServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to parse test server URL: %v", err)
@@ -73,7 +97,7 @@ func TestWebSocketEndpointIntegration(t *testing.T) {
 	u.Path = "/ws"
 
 	t.Run("Successful WebSocket Connection", func(t *testing.T) {
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
 		if err != nil {
 			t.Fatalf("Failed to connect to WebSocket: %v", err)
 		}
@@ -130,6 +154,7 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 	mux := server.SetupRoutes()
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
+	configureServerForTest(t, testServer.URL, nil)
 
 	u, err := url.Parse(testServer.URL)
 	if err != nil {
@@ -141,7 +166,7 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 	const numClients = 3
 	connections := make([]*websocket.Conn, numClients)
 	for i := 0; i < numClients; i++ {
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
 		if err != nil {
 			t.Fatalf("Failed to connect client %d: %v", i, err)
 		}
@@ -220,6 +245,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 	mux := server.SetupRoutes()
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
+	configureServerForTest(t, testServer.URL, nil)
 	u, err := url.Parse(testServer.URL)
 	if err != nil {
 		t.Fatalf("Failed to parse test server URL: %v", err)
@@ -229,7 +255,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 
 	t.Run("Connection and Disconnection", func(t *testing.T) {
 		// Connect
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
 		if err != nil {
 			t.Fatalf("Failed to connect: %v", err)
 		}
@@ -251,7 +277,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 	t.Run("Multiple Sequential Connections", func(t *testing.T) {
 		// Connect and disconnect multiple times
 		for i := 0; i < 3; i++ {
-			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
 			if err != nil {
 				t.Fatalf("Failed to connect on iteration %d: %v", i, err)
 			}
@@ -283,6 +309,7 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 	mux := server.SetupRoutes()
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
+	configureServerForTest(t, testServer.URL, nil)
 
 	// Convert HTTP URL to WebSocket URL
 	u, err := url.Parse(testServer.URL)
@@ -311,7 +338,7 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 			}()
 
 			// Connect
-			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), nil)
+			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
 			if err != nil {
 				done <- fmt.Errorf("client %d dial: %w", clientID, err)
 				return
@@ -360,5 +387,213 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Errorf("Client %d timed out", i)
 		}
+	}
+}
+
+func TestWebSocketOriginValidation(t *testing.T) {
+	server.StartHub()
+
+	mux := server.SetupRoutes()
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	allowedOrigin := "http://allowed.test"
+	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
+		cfg.AllowedOrigins = []string{testServer.URL, allowedOrigin}
+	})
+
+	u, err := url.Parse(testServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse test server URL: %v", err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/ws"
+
+	t.Run("Allowed origin", func(t *testing.T) {
+		header := http.Header{}
+		header.Set("Origin", allowedOrigin)
+		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), header)
+		if err != nil {
+			t.Fatalf("Expected allowed origin to succeed: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = conn.Close()
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+		})
+		if resp.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatalf("Expected status %d, got %d", http.StatusSwitchingProtocols, resp.StatusCode)
+		}
+	})
+
+	t.Run("Disallowed origin", func(t *testing.T) {
+		header := http.Header{}
+		header.Set("Origin", "http://blocked.test")
+		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), header)
+		if err == nil {
+			_ = conn.Close()
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			t.Fatalf("Expected disallowed origin to fail")
+		}
+		if resp == nil {
+			t.Fatalf("Expected HTTP response for disallowed origin")
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("Expected status %d for disallowed origin, got %d", http.StatusForbidden, resp.StatusCode)
+		}
+	})
+}
+
+func TestWebSocketMessageSizeLimit(t *testing.T) {
+	server.StartHub()
+
+	mux := server.SetupRoutes()
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	const limit int64 = 64
+	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
+		cfg.MaxMessageSize = limit
+	})
+
+	u, err := url.Parse(testServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse test server URL: %v", err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/ws"
+
+	sender, senderResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
+	if err != nil {
+		t.Fatalf("Failed to connect sender: %v", err)
+	}
+	defer func() { _ = sender.Close() }()
+	defer func() { _ = senderResp.Body.Close() }()
+
+	receiver, receiverResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
+	if err != nil {
+		t.Fatalf("Failed to connect receiver: %v", err)
+	}
+	defer func() { _ = receiver.Close() }()
+	defer func() { _ = receiverResp.Body.Close() }()
+
+	oversizedContent := strings.Repeat("A", int(limit)+10)
+	oversizedPayload := mustMarshalMessage(t, oversizedContent)
+	if int64(len(oversizedPayload)) <= limit {
+		t.Fatalf("Test payload is not oversized: %d bytes", len(oversizedPayload))
+	}
+
+	if err := sender.WriteMessage(websocket.TextMessage, oversizedPayload); err != nil && !websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
+		t.Fatalf("Unexpected error writing oversized message: %v", err)
+	}
+
+	expectNoMessage(t, receiver, 200*time.Millisecond)
+
+	if err := sender.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatalf("Failed to set read deadline: %v", err)
+	}
+	if _, _, readErr := sender.ReadMessage(); readErr == nil {
+		t.Fatalf("Expected connection closure after oversized message")
+	}
+}
+
+func TestWebSocketRateLimiting(t *testing.T) {
+	server.StartHub()
+
+	mux := server.SetupRoutes()
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	rateCfg := server.RateLimitConfig{Burst: 2, RefillInterval: 500 * time.Millisecond}
+	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
+		cfg.RateLimit = rateCfg
+	})
+
+	u, err := url.Parse(testServer.URL)
+	if err != nil {
+		t.Fatalf("Failed to parse test server URL: %v", err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/ws"
+
+	sender, senderResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
+	if err != nil {
+		t.Fatalf("Failed to connect sender: %v", err)
+	}
+	defer func() { _ = sender.Close() }()
+	defer func() { _ = senderResp.Body.Close() }()
+
+	receiver, receiverResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
+	if err != nil {
+		t.Fatalf("Failed to connect receiver: %v", err)
+	}
+	defer func() { _ = receiver.Close() }()
+	defer func() { _ = receiverResp.Body.Close() }()
+
+	for i := 0; i < rateCfg.Burst; i++ {
+		content := fmt.Sprintf("msg-%d", i)
+		if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
+			t.Fatalf("Failed to send message %d: %v", i, err)
+		}
+		if err := receiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatalf("Failed to set read deadline: %v", err)
+		}
+		_, raw, err := receiver.ReadMessage()
+		if err != nil {
+			t.Fatalf("Failed to receive message %d: %v", i, err)
+		}
+		var msg server.Message
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message %d: %v", i, err)
+		}
+		if msg.Content != content {
+			t.Fatalf("Expected content %q, got %q", content, msg.Content)
+		}
+	}
+
+	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "over-limit")); err != nil {
+		t.Fatalf("Failed to send over-limit message: %v", err)
+	}
+	expectNoMessage(t, receiver, 200*time.Millisecond)
+	_ = receiver.Close()
+	_ = receiverResp.Body.Close()
+	receiver, receiverResp, err = websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
+	if err != nil {
+		t.Fatalf("Failed to reconnect receiver: %v", err)
+	}
+
+	time.Sleep(rateCfg.RefillInterval + 100*time.Millisecond)
+
+	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "after-refill")); err != nil {
+		t.Fatalf("Failed to send message after refill: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	received := false
+	for time.Now().Before(deadline) {
+		if err := receiver.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+			t.Fatalf("Failed to set read deadline: %v", err)
+		}
+		_, raw, err := receiver.ReadMessage()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			t.Fatalf("Failed to receive message after refill: %v", err)
+		}
+		var msg server.Message
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("Failed to unmarshal message after refill: %v", err)
+		}
+		if msg.Content == "after-refill" {
+			received = true
+			break
+		}
+	}
+	if !received {
+		t.Fatalf("Expected 'after-refill' message after tokens refilled")
 	}
 }
