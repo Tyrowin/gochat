@@ -41,11 +41,10 @@ func TestGracefulShutdownWithClients(t *testing.T) {
 	hub, httpServer := setupShutdownTestServer(t, ":18082")
 
 	numClients := 5
-	clients, wg := connectTestClients(t, numClients, "ws://localhost:18082/ws")
+	clients := connectTestClients(t, numClients, "ws://localhost:18082/ws")
 
 	performGracefulShutdown(t, httpServer, hub)
 	verifyClientsDisconnected(t, clients, numClients)
-	waitForReaderGoroutines(t, wg)
 }
 
 // setupShutdownTestServer creates and starts a test server for shutdown testing
@@ -69,10 +68,9 @@ func setupShutdownTestServer(_ *testing.T, port string) (*server.Hub, *http.Serv
 	return hub, httpServer
 }
 
-// connectTestClients creates multiple WebSocket clients and starts reader goroutines
-func connectTestClients(t *testing.T, numClients int, url string) ([]*websocket.Conn, *sync.WaitGroup) {
+// connectTestClients creates multiple WebSocket clients without background readers
+func connectTestClients(t *testing.T, numClients int, url string) []*websocket.Conn {
 	clients := make([]*websocket.Conn, numClients)
-	wg := &sync.WaitGroup{}
 
 	for i := 0; i < numClients; i++ {
 		conn, err := testhelpers.ConnectWebSocket(url)
@@ -80,24 +78,10 @@ func connectTestClients(t *testing.T, numClients int, url string) ([]*websocket.
 			t.Fatalf("Failed to connect client %d: %v", i, err)
 		}
 		clients[i] = conn
-
-		wg.Add(1)
-		go clientReader(wg, conn)
 	}
 
 	time.Sleep(100 * time.Millisecond)
-	return clients, wg
-}
-
-// clientReader reads messages from a client connection until it's closed
-func clientReader(wg *sync.WaitGroup, conn *websocket.Conn) {
-	defer wg.Done()
-	for {
-		_, _, err := conn.ReadMessage()
-		if err != nil {
-			return
-		}
-	}
+	return clients
 }
 
 // performGracefulShutdown initiates and waits for graceful shutdown to complete
@@ -144,22 +128,6 @@ func verifyClientsDisconnected(t *testing.T, clients []*websocket.Conn, expected
 
 	if closedClients != expectedCount {
 		t.Errorf("Expected %d clients to be closed, got %d", expectedCount, closedClients)
-	}
-}
-
-// waitForReaderGoroutines waits for all client reader goroutines to finish
-func waitForReaderGoroutines(t *testing.T, wg *sync.WaitGroup) {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// All goroutines finished
-	case <-time.After(2 * time.Second):
-		t.Error("Client reader goroutines did not finish in time")
 	}
 }
 

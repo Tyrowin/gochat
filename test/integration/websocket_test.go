@@ -186,6 +186,15 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 	wsURL := buildWebSocketURL(t, testServer.URL)
 	connections := connectMultipleClients(t, wsURL, testServer.URL, 3)
 
+	// Ensure all connections are closed at the end
+	defer func() {
+		for _, conn := range connections {
+			if conn != nil {
+				conn.Close()
+			}
+		}
+	}()
+
 	// Give the hub time to register all clients
 	time.Sleep(50 * time.Millisecond)
 
@@ -206,8 +215,8 @@ func connectMultipleClients(t *testing.T, wsURL, serverURL string, numClients in
 		if err != nil {
 			t.Fatalf("Failed to connect client %d: %v", i, err)
 		}
-		defer func(c *websocket.Conn) { _ = c.Close() }(conn)
-		defer func() { _ = resp.Body.Close() }()
+		// Don't defer close here - let the caller handle cleanup
+		_ = resp.Body.Close()
 		connections[i] = conn
 	}
 	return connections

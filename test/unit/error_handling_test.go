@@ -3,6 +3,7 @@ package unit
 import (
 	"errors"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -10,6 +11,10 @@ import (
 
 	"github.com/Tyrowin/gochat/internal/server"
 	"github.com/gorilla/websocket"
+)
+
+const (
+	errMsgFailedToConnect = "Failed to connect: %v"
 )
 
 // TestClientErrorHandling verifies that client properly handles various error conditions
@@ -99,16 +104,27 @@ func TestHubShutdownTimeout(t *testing.T) {
 // TestWriteErrorHandling verifies write operations handle errors properly
 func TestWriteErrorHandling(t *testing.T) {
 	// Create test server
+	server.StartHub()
 	s := httptest.NewServer(server.SetupRoutes())
 	defer s.Close()
+
+	// Configure allowed origins
+	cfg := server.NewConfig()
+	cfg.AllowedOrigins = []string{s.URL}
+	server.SetConfig(cfg)
+	defer server.SetConfig(nil)
 
 	// Convert http to ws
 	url := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
 
-	// Connect
-	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	// Connect with proper origin header
+	dialer := websocket.DefaultDialer
+	header := http.Header{}
+	header.Set("Origin", s.URL)
+
+	ws, _, err := dialer.Dial(url, header)
 	if err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf(errMsgFailedToConnect, err)
 	}
 
 	// Send a valid message
@@ -130,16 +146,27 @@ func TestWriteErrorHandling(t *testing.T) {
 // TestReadErrorHandling verifies read operations handle errors properly
 func TestReadErrorHandling(t *testing.T) {
 	// Create test server
+	server.StartHub()
 	s := httptest.NewServer(server.SetupRoutes())
 	defer s.Close()
+
+	// Configure allowed origins
+	cfg := server.NewConfig()
+	cfg.AllowedOrigins = []string{s.URL}
+	server.SetConfig(cfg)
+	defer server.SetConfig(nil)
 
 	// Convert http to ws
 	url := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
 
-	// Connect
-	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	// Connect with proper origin header
+	dialer := websocket.DefaultDialer
+	header := http.Header{}
+	header.Set("Origin", s.URL)
+
+	ws, _, err := dialer.Dial(url, header)
 	if err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf(errMsgFailedToConnect, err)
 	}
 	defer ws.Close()
 
@@ -162,14 +189,26 @@ func TestErrorLoggingContext(t *testing.T) {
 	// In a real implementation, we would capture log output and verify
 	// it contains the expected client address information
 
+	server.StartHub()
 	s := httptest.NewServer(server.SetupRoutes())
 	defer s.Close()
 
+	// Configure allowed origins
+	cfg := server.NewConfig()
+	cfg.AllowedOrigins = []string{s.URL}
+	server.SetConfig(cfg)
+	defer server.SetConfig(nil)
+
 	url := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
 
-	ws, _, err := websocket.DefaultDialer.Dial(url, nil)
+	// Connect with proper origin header
+	dialer := websocket.DefaultDialer
+	header := http.Header{}
+	header.Set("Origin", s.URL)
+
+	ws, _, err := dialer.Dial(url, header)
 	if err != nil {
-		t.Fatalf("Failed to connect: %v", err)
+		t.Fatalf(errMsgFailedToConnect, err)
 	}
 	defer ws.Close()
 
