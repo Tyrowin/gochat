@@ -54,6 +54,62 @@ func (c *Client) GetSendChan() <-chan []byte {
 	return c.send
 }
 
+// setupReadConnection configures read deadlines and pong handler for the WebSocket connection
+func (c *Client) setupReadConnection() {
+	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		log.Printf("Error setting read deadline: %v", err)
+	}
+	c.conn.SetPongHandler(func(string) error {
+		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+			log.Printf("Error setting read deadline in pong handler: %v", err)
+		}
+		return nil
+	})
+}
+
+// handleReadError logs appropriate error messages based on the error type
+// and returns true if the read loop should break
+func (c *Client) handleReadError(err error) bool {
+	if errors.Is(err, websocket.ErrReadLimit) {
+		log.Printf("Message from %s exceeded maximum size of %d bytes", c.addr, c.maxMessageSize)
+		return true
+	}
+	if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseMessageTooBig) {
+		log.Printf("WebSocket error from %s: %v", c.addr, err)
+	}
+	return true
+}
+
+// checkRateLimit verifies if the client has exceeded rate limits
+// and returns true if the message should be processed
+func (c *Client) checkRateLimit() bool {
+	if c.rateLimiter != nil && !c.rateLimiter.allow() {
+		log.Printf("Rate limit exceeded for %s (%d messages per %s); discarding message", c.addr, c.rateLimit.Burst, c.rateLimit.RefillInterval)
+		return false
+	}
+	return true
+}
+
+// processMessage unmarshals, normalizes, and broadcasts a raw message
+// and returns true if the message was processed successfully
+func (c *Client) processMessage(rawMessage []byte) bool {
+	var msg Message
+	if err := json.Unmarshal(rawMessage, &msg); err != nil {
+		log.Printf("Invalid message from %s: %v", c.addr, err)
+		return false
+	}
+
+	normalizedMessage, err := json.Marshal(msg)
+	if err != nil {
+		log.Printf("Error normalizing message from %s: %v", c.addr, err)
+		return false
+	}
+
+	log.Printf("Received message from %s: %s", c.addr, string(normalizedMessage))
+	c.hub.broadcast <- BroadcastMessage{Sender: c, Payload: normalizedMessage}
+	return true
+}
+
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
@@ -64,46 +120,21 @@ func (c *Client) readPump() {
 		}
 	}()
 
-	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		log.Printf("Error setting read deadline: %v", err)
-	}
-	c.conn.SetPongHandler(func(string) error {
-		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-			log.Printf("Error setting read deadline in pong handler: %v", err)
-		}
-		return nil
-	})
+	c.setupReadConnection()
 
 	for {
 		_, rawMessage, err := c.conn.ReadMessage()
 		if err != nil {
-			if errors.Is(err, websocket.ErrReadLimit) {
-				log.Printf("Message from %s exceeded maximum size of %d bytes", c.addr, c.maxMessageSize)
-			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseMessageTooBig) {
-				log.Printf("WebSocket error from %s: %v", c.addr, err)
+			if c.handleReadError(err) {
+				break
 			}
-			break
 		}
 
-		if c.rateLimiter != nil && !c.rateLimiter.allow() {
-			log.Printf("Rate limit exceeded for %s (%d messages per %s); discarding message", c.addr, c.rateLimit.Burst, c.rateLimit.RefillInterval)
+		if !c.checkRateLimit() {
 			continue
 		}
 
-		var msg Message
-		if err := json.Unmarshal(rawMessage, &msg); err != nil {
-			log.Printf("Invalid message from %s: %v", c.addr, err)
-			continue
-		}
-
-		normalizedMessage, err := json.Marshal(msg)
-		if err != nil {
-			log.Printf("Error normalizing message from %s: %v", c.addr, err)
-			continue
-		}
-
-		log.Printf("Received message from %s: %s", c.addr, string(normalizedMessage))
-		c.hub.broadcast <- BroadcastMessage{Sender: c, Payload: normalizedMessage}
+		c.processMessage(rawMessage)
 	}
 }
 
