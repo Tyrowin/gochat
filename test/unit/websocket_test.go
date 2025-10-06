@@ -14,6 +14,10 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 )
 
+const (
+	errMethodNotAllowed = "Method not allowed. WebSocket endpoint only accepts GET requests."
+)
+
 // TestWebSocketHandlerMethodValidation tests the WebSocket handler's HTTP method validation.
 // It verifies that the handler correctly rejects non-GET requests with the appropriate
 // status code and error message, as WebSocket upgrades require GET requests.
@@ -28,25 +32,25 @@ func TestWebSocketHandlerMethodValidation(t *testing.T) {
 			name:           "POST request should be rejected",
 			method:         "POST",
 			expectedStatus: http.StatusMethodNotAllowed,
-			expectedBody:   "Method not allowed. WebSocket endpoint only accepts GET requests.",
+			expectedBody:   errMethodNotAllowed,
 		},
 		{
 			name:           "PUT request should be rejected",
 			method:         "PUT",
 			expectedStatus: http.StatusMethodNotAllowed,
-			expectedBody:   "Method not allowed. WebSocket endpoint only accepts GET requests.",
+			expectedBody:   errMethodNotAllowed,
 		},
 		{
 			name:           "DELETE request should be rejected",
 			method:         "DELETE",
 			expectedStatus: http.StatusMethodNotAllowed,
-			expectedBody:   "Method not allowed. WebSocket endpoint only accepts GET requests.",
+			expectedBody:   errMethodNotAllowed,
 		},
 		{
 			name:           "PATCH request should be rejected",
 			method:         "PATCH",
 			expectedStatus: http.StatusMethodNotAllowed,
-			expectedBody:   "Method not allowed. WebSocket endpoint only accepts GET requests.",
+			expectedBody:   errMethodNotAllowed,
 		},
 	}
 

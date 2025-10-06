@@ -22,6 +22,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	errMsgReadDeadline = "Failed to set read deadline: %v"
+	errMsgParseURL     = "Failed to parse test server URL: %v"
+)
+
 func mustMarshalMessage(t *testing.T, content string) []byte {
 	if t == nil {
 		panic("testing.T is required")
@@ -40,7 +45,7 @@ func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) 
 		t.Fatalf("nil connection provided to expectNoMessage")
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		t.Fatalf("Failed to set read deadline: %v", err)
+		t.Fatalf(errMsgReadDeadline, err)
 	}
 	_, _, err := conn.ReadMessage()
 	if err == nil {
@@ -89,60 +94,82 @@ func TestWebSocketEndpointIntegration(t *testing.T) {
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 	configureServerForTest(t, testServer.URL, nil)
-	u, err := url.Parse(testServer.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
+
+	wsURL := buildWebSocketURL(t, testServer.URL)
 
 	t.Run("Successful WebSocket Connection", func(t *testing.T) {
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-		if err != nil {
-			t.Fatalf("Failed to connect to WebSocket: %v", err)
-		}
-		defer func() { _ = conn.Close() }()
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode != http.StatusSwitchingProtocols {
-			t.Errorf("Expected status %d, got %d", http.StatusSwitchingProtocols, resp.StatusCode)
-		}
-
-		testMessage := "Hello, WebSocket!"
-		err = conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, testMessage))
-		if err != nil {
-			t.Errorf("Failed to send message: %v", err)
-		}
-
-		err = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		if err != nil {
-			t.Errorf("Failed to send close message: %v", err)
-		}
+		testSuccessfulWebSocketConnection(t, wsURL, testServer.URL)
 	})
 
 	t.Run("Invalid HTTP Method", func(t *testing.T) {
-		resp, err := http.Post(testServer.URL+"/ws", "text/plain", strings.NewReader("test"))
-		if err != nil {
-			t.Fatalf("Failed to make POST request: %v", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode != http.StatusMethodNotAllowed {
-			t.Errorf("Expected status %d for POST request, got %d", http.StatusMethodNotAllowed, resp.StatusCode)
-		}
+		testInvalidHTTPMethod(t, testServer.URL)
 	})
 
 	t.Run("GET Without WebSocket Headers", func(t *testing.T) {
-		resp, err := http.Get(testServer.URL + "/ws")
-		if err != nil {
-			t.Fatalf("Failed to make GET request: %v", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
-
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Errorf("Expected status %d for GET without WebSocket headers, got %d", http.StatusBadRequest, resp.StatusCode)
-		}
+		testGETWithoutWebSocketHeaders(t, testServer.URL)
 	})
+}
+
+// buildWebSocketURL constructs a WebSocket URL from the test server URL
+func buildWebSocketURL(t *testing.T, serverURL string) string {
+	u, err := url.Parse(serverURL)
+	if err != nil {
+		t.Fatalf(errMsgParseURL, err)
+	}
+	u.Scheme = "ws"
+	u.Path = "/ws"
+	return u.String()
+}
+
+// testSuccessfulWebSocketConnection tests establishing a WebSocket connection and sending messages
+func testSuccessfulWebSocketConnection(t *testing.T, wsURL, serverURL string) {
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
+	if err != nil {
+		t.Fatalf("Failed to connect to WebSocket: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Errorf("Expected status %d, got %d", http.StatusSwitchingProtocols, resp.StatusCode)
+	}
+
+	testMessage := "Hello, WebSocket!"
+	err = conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, testMessage))
+	if err != nil {
+		t.Errorf("Failed to send message: %v", err)
+	}
+
+	err = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	if err != nil {
+		t.Errorf("Failed to send close message: %v", err)
+	}
+}
+
+// testInvalidHTTPMethod verifies that POST requests to WebSocket endpoint are rejected
+func testInvalidHTTPMethod(t *testing.T, serverURL string) {
+	resp, err := http.Post(serverURL+"/ws", "text/plain", strings.NewReader("test"))
+	if err != nil {
+		t.Fatalf("Failed to make POST request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("Expected status %d for POST request, got %d", http.StatusMethodNotAllowed, resp.StatusCode)
+	}
+}
+
+// testGETWithoutWebSocketHeaders verifies that GET requests without WebSocket headers are rejected
+func testGETWithoutWebSocketHeaders(t *testing.T, serverURL string) {
+	resp, err := http.Get(serverURL + "/ws")
+	if err != nil {
+		t.Fatalf("Failed to make GET request: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("Expected status %d for GET without WebSocket headers, got %d", http.StatusBadRequest, resp.StatusCode)
+	}
 }
 
 // TestWebSocketMessageBroadcasting tests the WebSocket message broadcasting functionality.
@@ -156,17 +183,26 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 	defer testServer.Close()
 	configureServerForTest(t, testServer.URL, nil)
 
-	u, err := url.Parse(testServer.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
+	wsURL := buildWebSocketURL(t, testServer.URL)
+	connections := connectMultipleClients(t, wsURL, testServer.URL, 3)
 
-	const numClients = 3
+	// Give the hub time to register all clients
+	time.Sleep(50 * time.Millisecond)
+
+	messageContent := "Hello from client 0!"
+	sendMessageFromClient(t, connections[0], messageContent)
+	verifyMessageReceivedByOtherClients(t, connections, messageContent, 0)
+	expectNoMessage(t, connections[0], 200*time.Millisecond)
+
+	testMalformedMessageIgnored(t, connections)
+	closeAllConnections(t, connections)
+}
+
+// connectMultipleClients establishes multiple WebSocket connections
+func connectMultipleClients(t *testing.T, wsURL, serverURL string, numClients int) []*websocket.Conn {
 	connections := make([]*websocket.Conn, numClients)
 	for i := 0; i < numClients; i++ {
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
+		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
 		if err != nil {
 			t.Fatalf("Failed to connect client %d: %v", i, err)
 		}
@@ -174,60 +210,70 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		connections[i] = conn
 	}
+	return connections
+}
 
-	// Give the hub time to register all clients
-	time.Sleep(50 * time.Millisecond)
+// sendMessageFromClient sends a message from a specific client
+func sendMessageFromClient(t *testing.T, conn *websocket.Conn, content string) {
+	if err := conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
+		t.Fatalf("Failed to send message: %v", err)
+	}
+}
 
-	// Send a message from the first client
-	messageContent := "Hello from client 0!"
-	if err := connections[0].WriteMessage(websocket.TextMessage, mustMarshalMessage(t, messageContent)); err != nil {
-		t.Fatalf("Failed to send message from client 0: %v", err)
+// verifyMessageReceivedByOtherClients checks that all clients except sender receive the message
+func verifyMessageReceivedByOtherClients(t *testing.T, connections []*websocket.Conn, expectedContent string, senderIndex int) {
+	for i := 1; i < len(connections); i++ {
+		if i == senderIndex {
+			continue
+		}
+		verifyClientReceivesMessage(t, connections[i], expectedContent, i)
+	}
+}
+
+// verifyClientReceivesMessage verifies a single client receives the expected message
+func verifyClientReceivesMessage(t *testing.T, conn *websocket.Conn, expectedContent string, clientIndex int) {
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Errorf("Failed to set read deadline for client %d: %v", clientIndex, err)
+		return
 	}
 
-	// Check that all other clients receive the message
-	for i := 1; i < numClients; i++ {
-		if err := connections[i].SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-			t.Errorf("Failed to set read deadline for client %d: %v", i, err)
-			continue
-		}
-
-		messageType, message, err := connections[i].ReadMessage()
-		if err != nil {
-			t.Errorf("Client %d failed to receive broadcasted message: %v", i, err)
-			continue
-		}
-
-		if messageType != websocket.TextMessage {
-			t.Errorf("Client %d: Expected text message, got type %d", i, messageType)
-		}
-
-		var received server.Message
-		if err := json.Unmarshal(message, &received); err != nil {
-			t.Errorf("Client %d: Failed to unmarshal message: %v", i, err)
-			continue
-		}
-
-		if received.Content != messageContent {
-			t.Errorf("Client %d: Expected content %q, got %q", i, messageContent, received.Content)
-		}
+	messageType, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Errorf("Client %d failed to receive broadcasted message: %v", clientIndex, err)
+		return
 	}
 
-	// Ensure the sender does not receive its own message
-	expectNoMessage(t, connections[0], 200*time.Millisecond)
+	if messageType != websocket.TextMessage {
+		t.Errorf("Client %d: Expected text message, got type %d", clientIndex, messageType)
+	}
 
-	// Send malformed JSON from another client and ensure it is ignored
+	var received server.Message
+	if err := json.Unmarshal(message, &received); err != nil {
+		t.Errorf("Client %d: Failed to unmarshal message: %v", clientIndex, err)
+		return
+	}
+
+	if received.Content != expectedContent {
+		t.Errorf("Client %d: Expected content %q, got %q", clientIndex, expectedContent, received.Content)
+	}
+}
+
+// testMalformedMessageIgnored sends malformed JSON and verifies it's ignored by all clients
+func testMalformedMessageIgnored(t *testing.T, connections []*websocket.Conn) {
 	if err := connections[1].WriteMessage(websocket.TextMessage, []byte("not valid json")); err != nil {
 		t.Fatalf("Failed to send malformed message: %v", err)
 	}
 
-	for i := 0; i < numClients; i++ {
+	for i := 0; i < len(connections); i++ {
 		if i == 1 {
 			continue
 		}
 		expectNoMessage(t, connections[i], 150*time.Millisecond)
 	}
+}
 
-	// Close all connections gracefully
+// closeAllConnections gracefully closes all WebSocket connections
+func closeAllConnections(t *testing.T, connections []*websocket.Conn) {
 	for i, conn := range connections {
 		err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		if err != nil {
@@ -248,7 +294,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 	configureServerForTest(t, testServer.URL, nil)
 	u, err := url.Parse(testServer.URL)
 	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
+		t.Fatalf(errMsgParseURL, err)
 	}
 	u.Scheme = "ws"
 	u.Path = "/ws"
@@ -302,83 +348,86 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 // It verifies that multiple clients can connect simultaneously and exchange messages
 // without causing race conditions or system instability.
 func TestWebSocketConcurrentConnections(t *testing.T) {
-	// Start the hub
 	server.StartHub()
 
-	// Create a test server
 	mux := server.SetupRoutes()
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 	configureServerForTest(t, testServer.URL, nil)
 
-	// Convert HTTP URL to WebSocket URL
-	u, err := url.Parse(testServer.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
+	wsURL := buildWebSocketURL(t, testServer.URL)
 
 	const numConcurrentClients = 10
 	done := make(chan error, numConcurrentClients)
 
-	// Start multiple clients concurrently
-	for i := 0; i < numConcurrentClients; i++ {
+	launchConcurrentClients(wsURL, testServer.URL, numConcurrentClients, done)
+	waitForConcurrentClients(t, numConcurrentClients, done)
+}
+
+// launchConcurrentClients starts multiple WebSocket clients concurrently
+func launchConcurrentClients(wsURL, serverURL string, numClients int, done chan error) {
+	for i := 0; i < numClients; i++ {
 		message := "Message from client " + string(rune('0'+i))
 		payload, err := json.Marshal(server.Message{Content: message})
 		if err != nil {
-			t.Fatalf("Failed to marshal message for client %d: %v", i, err)
+			done <- fmt.Errorf("failed to marshal message for client %d: %w", i, err)
+			continue
 		}
 
-		go func(clientID int, msgPayload []byte) {
-			defer func() {
-				if r := recover(); r != nil {
-					done <- fmt.Errorf("client %d panic: %v", clientID, r)
-				}
-			}()
+		go runConcurrentClient(i, wsURL, serverURL, payload, done)
+	}
+}
 
-			// Connect
-			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-			if err != nil {
-				done <- fmt.Errorf("client %d dial: %w", clientID, err)
-				return
-			}
-			defer func() { _ = conn.Close() }()
-			defer func() { _ = resp.Body.Close() }()
+// runConcurrentClient runs a single concurrent WebSocket client
+func runConcurrentClient(clientID int, wsURL, serverURL string, msgPayload []byte, done chan error) {
+	defer func() {
+		if r := recover(); r != nil {
+			done <- fmt.Errorf("client %d panic: %v", clientID, r)
+		}
+	}()
 
-			// Send a message
-			if err := conn.WriteMessage(websocket.TextMessage, msgPayload); err != nil {
-				done <- fmt.Errorf("client %d write: %w", clientID, err)
-				return
-			}
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
+	if err != nil {
+		done <- fmt.Errorf("client %d dial: %w", clientID, err)
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	defer func() { _ = resp.Body.Close() }()
 
-			// Try to read any broadcasted messages for a short time
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			defer cancel()
-
-			go func() {
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						_, _, err := conn.ReadMessage()
-						if err != nil {
-							// Connection might be closed, which is normal
-							return
-						}
-						// Successfully read a message
-					}
-				}
-			}()
-
-			<-ctx.Done()
-			done <- nil
-		}(i, payload)
+	if err := conn.WriteMessage(websocket.TextMessage, msgPayload); err != nil {
+		done <- fmt.Errorf("client %d write: %w", clientID, err)
+		return
 	}
 
-	// Wait for all clients to complete
-	for i := 0; i < numConcurrentClients; i++ {
+	readMessagesWithTimeout(conn, 100*time.Millisecond)
+	done <- nil
+}
+
+// readMessagesWithTimeout reads messages from a connection with a timeout
+func readMessagesWithTimeout(conn *websocket.Conn, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				_, _, err := conn.ReadMessage()
+				if err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	<-ctx.Done()
+}
+
+// waitForConcurrentClients waits for all concurrent clients to complete
+func waitForConcurrentClients(t *testing.T, numClients int, done chan error) {
+	for i := 0; i < numClients; i++ {
 		select {
 		case err := <-done:
 			if err != nil {
@@ -402,50 +451,55 @@ func TestWebSocketOriginValidation(t *testing.T) {
 		cfg.AllowedOrigins = []string{testServer.URL, allowedOrigin}
 	})
 
-	u, err := url.Parse(testServer.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
+	wsURL := buildWebSocketURL(t, testServer.URL)
 
 	t.Run("Allowed origin", func(t *testing.T) {
-		header := http.Header{}
-		header.Set("Origin", allowedOrigin)
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), header)
-		if err != nil {
-			t.Fatalf("Expected allowed origin to succeed: %v", err)
-		}
-		t.Cleanup(func() {
-			_ = conn.Close()
-			if resp != nil {
-				_ = resp.Body.Close()
-			}
-		})
-		if resp.StatusCode != http.StatusSwitchingProtocols {
-			t.Fatalf("Expected status %d, got %d", http.StatusSwitchingProtocols, resp.StatusCode)
-		}
+		testAllowedOrigin(t, wsURL, allowedOrigin)
 	})
 
 	t.Run("Disallowed origin", func(t *testing.T) {
-		header := http.Header{}
-		header.Set("Origin", "http://blocked.test")
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), header)
-		if err == nil {
-			_ = conn.Close()
-			if resp != nil {
-				_ = resp.Body.Close()
-			}
-			t.Fatalf("Expected disallowed origin to fail")
-		}
-		if resp == nil {
-			t.Fatalf("Expected HTTP response for disallowed origin")
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusForbidden {
-			t.Fatalf("Expected status %d for disallowed origin, got %d", http.StatusForbidden, resp.StatusCode)
+		testDisallowedOrigin(t, wsURL)
+	})
+}
+
+// testAllowedOrigin verifies that connections from allowed origins succeed
+func testAllowedOrigin(t *testing.T, wsURL, allowedOrigin string) {
+	header := http.Header{}
+	header.Set("Origin", allowedOrigin)
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		t.Fatalf("Expected allowed origin to succeed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+		if resp != nil {
+			_ = resp.Body.Close()
 		}
 	})
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("Expected status %d, got %d", http.StatusSwitchingProtocols, resp.StatusCode)
+	}
+}
+
+// testDisallowedOrigin verifies that connections from disallowed origins are rejected
+func testDisallowedOrigin(t *testing.T, wsURL string) {
+	header := http.Header{}
+	header.Set("Origin", "http://blocked.test")
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err == nil {
+		_ = conn.Close()
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		t.Fatalf("Expected disallowed origin to fail")
+	}
+	if resp == nil {
+		t.Fatalf("Expected HTTP response for disallowed origin")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Expected status %d for disallowed origin, got %d", http.StatusForbidden, resp.StatusCode)
+	}
 }
 
 func TestWebSocketMessageSizeLimit(t *testing.T) {
@@ -462,7 +516,7 @@ func TestWebSocketMessageSizeLimit(t *testing.T) {
 
 	u, err := url.Parse(testServer.URL)
 	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
+		t.Fatalf(errMsgParseURL, err)
 	}
 	u.Scheme = "ws"
 	u.Path = "/ws"
@@ -494,7 +548,7 @@ func TestWebSocketMessageSizeLimit(t *testing.T) {
 	expectNoMessage(t, receiver, 200*time.Millisecond)
 
 	if err := sender.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
-		t.Fatalf("Failed to set read deadline: %v", err)
+		t.Fatalf(errMsgReadDeadline, err)
 	}
 	if _, _, readErr := sender.ReadMessage(); readErr == nil {
 		t.Fatalf("Expected connection closure after oversized message")
@@ -513,70 +567,104 @@ func TestWebSocketRateLimiting(t *testing.T) {
 		cfg.RateLimit = rateCfg
 	})
 
-	u, err := url.Parse(testServer.URL)
-	if err != nil {
-		t.Fatalf("Failed to parse test server URL: %v", err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
-
-	sender, senderResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-	if err != nil {
-		t.Fatalf("Failed to connect sender: %v", err)
-	}
+	wsURL := buildWebSocketURL(t, testServer.URL)
+	sender, senderResp := connectRateLimitClient(t, wsURL, testServer.URL, "sender")
 	defer func() { _ = sender.Close() }()
 	defer func() { _ = senderResp.Body.Close() }()
 
-	receiver, receiverResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-	if err != nil {
-		t.Fatalf("Failed to connect receiver: %v", err)
-	}
+	receiver, receiverResp := connectRateLimitClient(t, wsURL, testServer.URL, "receiver")
 	defer func() { _ = receiver.Close() }()
 	defer func() { _ = receiverResp.Body.Close() }()
 
-	for i := 0; i < rateCfg.Burst; i++ {
+	sendAndReceiveBurstMessages(t, sender, receiver, rateCfg.Burst)
+	testOverLimitMessageRejected(t, sender, receiver)
+
+	receiver, receiverResp = reconnectReceiver(t, wsURL, testServer.URL, receiver, receiverResp)
+	testMessageAfterRefill(t, sender, receiver, rateCfg.RefillInterval)
+}
+
+// connectRateLimitClient establishes a WebSocket connection for rate limit testing
+func connectRateLimitClient(t *testing.T, wsURL, serverURL, clientName string) (*websocket.Conn, *http.Response) {
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
+	if err != nil {
+		t.Fatalf("Failed to connect %s: %v", clientName, err)
+	}
+	return conn, resp
+}
+
+// sendAndReceiveBurstMessages sends and receives messages up to the burst limit
+func sendAndReceiveBurstMessages(t *testing.T, sender, receiver *websocket.Conn, burstLimit int) {
+	for i := 0; i < burstLimit; i++ {
 		content := fmt.Sprintf("msg-%d", i)
-		if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
-			t.Fatalf("Failed to send message %d: %v", i, err)
-		}
-		if err := receiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			t.Fatalf("Failed to set read deadline: %v", err)
-		}
-		_, raw, err := receiver.ReadMessage()
-		if err != nil {
-			t.Fatalf("Failed to receive message %d: %v", i, err)
-		}
-		var msg server.Message
-		if err := json.Unmarshal(raw, &msg); err != nil {
-			t.Fatalf("Failed to unmarshal message %d: %v", i, err)
-		}
-		if msg.Content != content {
-			t.Fatalf("Expected content %q, got %q", content, msg.Content)
-		}
+		sendAndVerifyMessage(t, sender, receiver, content, i)
+	}
+}
+
+// sendAndVerifyMessage sends a message from sender and verifies receiver gets it
+func sendAndVerifyMessage(t *testing.T, sender, receiver *websocket.Conn, content string, msgNum int) {
+	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
+		t.Fatalf("Failed to send message %d: %v", msgNum, err)
 	}
 
+	if err := receiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf(errMsgReadDeadline, err)
+	}
+
+	_, raw, err := receiver.ReadMessage()
+	if err != nil {
+		t.Fatalf("Failed to receive message %d: %v", msgNum, err)
+	}
+
+	var msg server.Message
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		t.Fatalf("Failed to unmarshal message %d: %v", msgNum, err)
+	}
+
+	if msg.Content != content {
+		t.Fatalf("Expected content %q, got %q", content, msg.Content)
+	}
+}
+
+// testOverLimitMessageRejected verifies that messages over the rate limit are rejected
+func testOverLimitMessageRejected(t *testing.T, sender, receiver *websocket.Conn) {
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "over-limit")); err != nil {
 		t.Fatalf("Failed to send over-limit message: %v", err)
 	}
 	expectNoMessage(t, receiver, 200*time.Millisecond)
-	_ = receiver.Close()
-	_ = receiverResp.Body.Close()
-	receiver, receiverResp, err = websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
+}
+
+// reconnectReceiver closes and reconnects the receiver client
+func reconnectReceiver(t *testing.T, wsURL, serverURL string, oldReceiver *websocket.Conn, oldResp *http.Response) (*websocket.Conn, *http.Response) {
+	_ = oldReceiver.Close()
+	_ = oldResp.Body.Close()
+
+	receiver, receiverResp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
 	if err != nil {
 		t.Fatalf("Failed to reconnect receiver: %v", err)
 	}
+	return receiver, receiverResp
+}
 
-	time.Sleep(rateCfg.RefillInterval + 100*time.Millisecond)
+// testMessageAfterRefill verifies that messages can be sent after the rate limit refills
+func testMessageAfterRefill(t *testing.T, sender, receiver *websocket.Conn, refillInterval time.Duration) {
+	time.Sleep(refillInterval + 100*time.Millisecond)
 
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "after-refill")); err != nil {
 		t.Fatalf("Failed to send message after refill: %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	received := false
+
+	waitForSpecificMessage(t, receiver, "after-refill", 2*time.Second)
+}
+
+// waitForSpecificMessage waits for a specific message content to be received
+func waitForSpecificMessage(t *testing.T, receiver *websocket.Conn, expectedContent string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+
 	for time.Now().Before(deadline) {
 		if err := receiver.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
-			t.Fatalf("Failed to set read deadline: %v", err)
+			t.Fatalf(errMsgReadDeadline, err)
 		}
+
 		_, raw, err := receiver.ReadMessage()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -584,16 +672,16 @@ func TestWebSocketRateLimiting(t *testing.T) {
 			}
 			t.Fatalf("Failed to receive message after refill: %v", err)
 		}
+
 		var msg server.Message
 		if err := json.Unmarshal(raw, &msg); err != nil {
 			t.Fatalf("Failed to unmarshal message after refill: %v", err)
 		}
-		if msg.Content == "after-refill" {
-			received = true
-			break
+
+		if msg.Content == expectedContent {
+			return
 		}
 	}
-	if !received {
-		t.Fatalf("Expected 'after-refill' message after tokens refilled")
-	}
+
+	t.Fatalf("Expected '%s' message after tokens refilled", expectedContent)
 }

@@ -14,7 +14,11 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 )
 
-// TestHealthHandlerUnit tests the health handler function in isolation.
+const (
+	expectedHealthResponse = "GoChat server is running!"
+)
+
+// TestHeahHandlerUnit tests the health handler function in isolation.
 // It verifies that the handler responds correctly to different HTTP methods
 // and returns the expected status code and response body.
 func TestHealthHandlerUnit(t *testing.T) {
@@ -28,13 +32,13 @@ func TestHealthHandlerUnit(t *testing.T) {
 			name:           "GET request to health endpoint",
 			method:         "GET",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "GoChat server is running!",
+			expectedBody:   expectedHealthResponse,
 		},
 		{
 			name:           "POST request to health endpoint",
 			method:         "POST",
 			expectedStatus: http.StatusOK,
-			expectedBody:   "GoChat server is running!",
+			expectedBody:   expectedHealthResponse,
 		},
 	}
 
@@ -67,7 +71,7 @@ func TestHealthHandlerUnit(t *testing.T) {
 // including GET, POST, PUT, DELETE, PATCH, HEAD, and OPTIONS.
 func TestHTTPMethodsUnit(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if _, err := w.Write([]byte("GoChat server is running!")); err != nil {
+		if _, err := w.Write([]byte(expectedHealthResponse)); err != nil {
 			t.Errorf("Failed to write response: %v", err)
 		}
 	})
@@ -76,29 +80,35 @@ func TestHTTPMethodsUnit(t *testing.T) {
 
 	for _, method := range methods {
 		t.Run("Test_"+method+"_method", func(t *testing.T) {
-			req, err := http.NewRequest(method, "/", http.NoBody)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			rr := httptest.NewRecorder()
-			handler.ServeHTTP(rr, req)
-			if status := rr.Code; status != http.StatusOK {
-				t.Errorf("handler returned wrong status code for %s: got %v want %v",
-					method, status, http.StatusOK)
-			}
-
-			// For our simple handler, all methods return the same response
-			// Note: In a real implementation, HEAD would typically not include a body
-			// but our test handler is simplified
-			if method != "HEAD" {
-				expected := "GoChat server is running!"
-				if rr.Body.String() != expected {
-					t.Errorf("handler returned unexpected body for %s: got %v want %v",
-						method, rr.Body.String(), expected)
-				}
-			}
+			testHTTPMethod(t, handler, method)
 		})
+	}
+}
+
+// testHTTPMethod tests a single HTTP method against the handler
+func testHTTPMethod(t *testing.T, handler http.HandlerFunc, method string) {
+	req, err := http.NewRequest(method, "/", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if status := rr.Code; status != http.StatusOK {
+		t.Errorf("handler returned wrong status code for %s: got %v want %v",
+			method, status, http.StatusOK)
+	}
+
+	// For our simple handler, all methods return the same response
+	// Note: In a real implementation, HEAD would typically not include a body
+	// but our test handler is simplified
+	if method != "HEAD" {
+		expected := expectedHealthResponse
+		if rr.Body.String() != expected {
+			t.Errorf("handler returned unexpected body for %s: got %v want %v",
+				method, rr.Body.String(), expected)
+		}
 	}
 }
 
@@ -127,7 +137,7 @@ func TestSetupRoutes(t *testing.T) {
 			status, http.StatusOK)
 	}
 
-	expected := "GoChat server is running!"
+	expected := expectedHealthResponse
 	if rr.Body.String() != expected {
 		t.Errorf("handler returned unexpected body: got %v want %v",
 			rr.Body.String(), expected)
