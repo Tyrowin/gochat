@@ -15,6 +15,12 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 )
 
+// Test error message constants
+const (
+	errFailedRequest      = "Failed to make request: %v"
+	errExpectedStatusCode = "Expected status code %d, got %d"
+)
+
 // TestHealthEndpointIntegration tests the health endpoint with the actual server configuration.
 // It verifies that the complete server setup including routing, handlers, and HTTP responses
 // work correctly together in a real server environment.
@@ -29,13 +35,13 @@ func TestHealthEndpointIntegration(t *testing.T) {
 	// Test the endpoint
 	resp, err := http.Get(testServer.URL + "/")
 	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
+		t.Fatalf(errFailedRequest, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Check status code
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+		t.Errorf(errExpectedStatusCode, http.StatusOK, resp.StatusCode)
 	}
 
 	// Check content type
@@ -79,7 +85,7 @@ func TestServerTimeouts(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+		t.Errorf(errExpectedStatusCode, http.StatusOK, resp.StatusCode)
 	}
 }
 
@@ -98,19 +104,19 @@ func TestServerSecurity(t *testing.T) {
 	// Test that server responds to basic requests
 	resp, err := http.Get(server.URL + "/")
 	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
+		t.Fatalf(errFailedRequest, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	// Verify server is responding
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+		t.Errorf(errExpectedStatusCode, http.StatusOK, resp.StatusCode)
 	}
 
 	// Test non-existent endpoint - our simple server returns 404 by default for unhandled routes
 	resp404, err := http.Get(server.URL + "/nonexistent")
 	if err != nil {
-		t.Fatalf("Failed to make request: %v", err)
+		t.Fatalf(errFailedRequest, err)
 	}
 	defer func() { _ = resp404.Body.Close() }()
 
@@ -145,7 +151,7 @@ func TestFullServerIntegration(t *testing.T) {
 
 	// Verify response
 	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status code %d, got %d", http.StatusOK, resp.StatusCode)
+		t.Errorf(errExpectedStatusCode, http.StatusOK, resp.StatusCode)
 	}
 
 	// Verify content type

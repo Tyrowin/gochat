@@ -6,10 +6,13 @@
 package testhelpers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // CreateTestServer creates a test HTTP server with the given handler.
@@ -91,4 +94,84 @@ func MakeRequest(t *testing.T, method, url string) *http.Response {
 	}
 
 	return resp
+}
+
+// ConnectWebSocket creates a WebSocket connection to the specified URL.
+// It returns the connection or an error if connection fails.
+func ConnectWebSocket(url string) (*websocket.Conn, error) {
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+	}
+
+	// Set a proper origin header for testing
+	headers := http.Header{}
+	headers.Set("Origin", "http://localhost:8080")
+
+	conn, resp, err := dialer.Dial(url, headers)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	return conn, err
+}
+
+// SendMessage sends a JSON message over the WebSocket connection.
+// It marshals the message with a "content" field and sends it as JSON.
+func SendMessage(conn *websocket.Conn, content string) error {
+	message := map[string]string{"content": content}
+	return conn.WriteJSON(message)
+}
+
+// ReceiveMessage reads a JSON message from the WebSocket connection.
+// It returns the message content or an error if reading fails.
+func ReceiveMessage(conn *websocket.Conn) (map[string]interface{}, error) {
+	var message map[string]interface{}
+	err := conn.ReadJSON(&message)
+	return message, err
+}
+
+// SendRawMessage sends a raw byte message over the WebSocket connection.
+func SendRawMessage(conn *websocket.Conn, messageType int, data []byte) error {
+	return conn.WriteMessage(messageType, data)
+}
+
+// ReceiveRawMessage reads a raw message from the WebSocket connection.
+func ReceiveRawMessage(conn *websocket.Conn) (int, []byte, error) {
+	return conn.ReadMessage()
+}
+
+// CloseWebSocket gracefully closes a WebSocket connection.
+func CloseWebSocket(conn *websocket.Conn) error {
+	err := conn.WriteMessage(websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+	if err != nil {
+		return err
+	}
+	return conn.Close()
+}
+
+// AssertMessageContent checks if the received message has the expected content.
+func AssertMessageContent(t *testing.T, message map[string]interface{}, expectedContent string) {
+	t.Helper()
+
+	content, ok := message["content"]
+	if !ok {
+		t.Error("Message does not contain 'content' field")
+		return
+	}
+
+	contentStr, ok := content.(string)
+	if !ok {
+		t.Error("Message content is not a string")
+		return
+	}
+
+	if contentStr != expectedContent {
+		t.Errorf("Expected content %q, got %q", expectedContent, contentStr)
+	}
+}
+
+// CreateJSONMessage creates a JSON-encoded message with the given content.
+func CreateJSONMessage(content string) ([]byte, error) {
+	message := map[string]string{"content": content}
+	return json.Marshal(message)
 }

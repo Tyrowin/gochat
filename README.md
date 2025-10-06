@@ -11,6 +11,8 @@ High-performance, standalone, multi-client chat server built using Go and WebSoc
 
 - Real-time WebSocket-based chat communication
 - Multi-client support with concurrent connections
+- **Cross-platform development support** - Build and develop on Windows, macOS, or Linux
+- **Cross-compilation** - Build binaries for any platform from any platform
 - Built-in security and vulnerability scanning
 - Comprehensive CI/CD pipeline with automated testing
 - Static code analysis with golangci-lint
@@ -20,7 +22,12 @@ High-performance, standalone, multi-client chat server built using Go and WebSoc
 
 - Go 1.25.1 or later
 - Git
-- Make (for using the Makefile)
+- Make (optional but recommended for easier builds)
+  - **Windows**: Install via [Chocolatey](https://chocolatey.org/) (`choco install make`)
+  - **macOS**: Install Xcode Command Line Tools (`xcode-select --install`)
+  - **Linux**: Usually pre-installed (`apt install make` or `yum install make`)
+
+**Note**: If you don't have Make, you can use Go commands directly (see [Build Guide](docs/BUILD_GUIDE.md)).
 
 ## Quick Start
 
@@ -39,14 +46,43 @@ High-performance, standalone, multi-client chat server built using Go and WebSoc
 
 3. **Build the application**
 
+   **With Make:**
+
    ```bash
    make build
    ```
 
+   **Or with Go directly:**
+
+   ```bash
+   go build -o bin/gochat ./cmd/server
+   ```
+
 4. **Run the server**
+
+   **On Windows:**
+
+   ```powershell
+   .\bin\gochat.exe
+   ```
+
+   **On macOS/Linux:**
+
+   ```bash
+   ./bin/gochat
+   ```
+
+   **Or using Make:**
+
    ```bash
    make run
    ```
+
+The server will start on `http://localhost:8080` with the following endpoints:
+
+- `/` - Health check
+- `/ws` - WebSocket connection endpoint
+- `/test` - Test page for WebSocket functionality
 
 ## Development
 
@@ -155,7 +191,150 @@ This will run:
 
 ## Building and Deployment
 
-### Local Build
+### Cross-Platform Development
+
+GoChat supports development and building on **Windows**, **macOS**, and **Linux** with full cross-compilation capabilities. You can build binaries for any platform from any platform.
+
+#### Using Make (Recommended)
+
+The Makefile works on all platforms (requires `make`):
+
+```bash
+# Build for current platform
+make build-current
+
+# Build for specific platforms
+make build-linux           # Linux (amd64)
+make build-linux-arm64     # Linux (arm64)
+make build-darwin          # macOS Intel
+make build-darwin-arm64    # macOS Apple Silicon
+make build-windows         # Windows (amd64)
+
+# Build for all platforms
+make build-all
+
+# Create optimized release builds
+make release
+
+# List all supported platforms
+make list-platforms
+```
+
+#### Without Make (Direct Go Commands)
+
+If you don't have Make installed, you can use Go directly:
+
+**Windows (PowerShell):**
+
+```powershell
+# Build for current platform
+go build -o bin\gochat.exe .\cmd\server
+
+# Build for Linux
+$env:GOOS="linux"; $env:GOARCH="amd64"; go build -o bin\gochat-linux-amd64 .\cmd\server
+
+# Build for macOS
+$env:GOOS="darwin"; $env:GOARCH="arm64"; go build -o bin\gochat-darwin-arm64 .\cmd\server
+```
+
+**macOS/Linux:**
+
+```bash
+# Build for current platform
+go build -o bin/gochat ./cmd/server
+
+# Build for Windows
+GOOS=windows GOARCH=amd64 go build -o bin/gochat-windows-amd64.exe ./cmd/server
+
+# Build for macOS Apple Silicon
+GOOS=darwin GOARCH=arm64 go build -o bin/gochat-darwin-arm64 ./cmd/server
+```
+
+#### Cross-Compilation Examples
+
+Go's cross-compilation support means you can build for any platform from any platform:
+
+**From Windows → Build for Linux:**
+
+```bash
+make build-linux
+```
+
+**From macOS → Build for Windows:**
+
+```bash
+make build-windows
+```
+
+**From Linux → Build for macOS (Apple Silicon):**
+
+```bash
+make build-darwin-arm64
+```
+
+#### Understanding the Build Output
+
+After building, binaries are organized in the `./bin` directory:
+
+```
+bin/
+├── gochat                      # Current platform binary (from `make build`)
+├── linux/
+│   ├── gochat-amd64           # Linux 64-bit
+│   ├── gochat-arm64           # Linux ARM64 (Raspberry Pi, AWS Graviton)
+│   └── checksums.txt          # SHA256 checksums (from `make release`)
+├── darwin/
+│   ├── gochat-amd64           # macOS Intel
+│   ├── gochat-arm64           # macOS Apple Silicon (M1/M2/M3)
+│   └── checksums.txt          # SHA256 checksums (from `make release`)
+└── windows/
+    ├── gochat-amd64.exe       # Windows 64-bit
+    └── checksums.txt          # SHA256 checksums (from `make release`)
+```
+
+**Note:** Platform-specific build targets create binaries in their respective subdirectories, making it easier to manage and distribute builds for different platforms.
+
+#### Platform-Specific Code
+
+If you need to write platform-specific code, Go provides several approaches:
+
+**File Name Suffixes:**
+
+```
+config_windows.go   # Only compiled on Windows
+config_linux.go     # Only compiled on Linux
+config_darwin.go    # Only compiled on macOS
+```
+
+**Build Tags:**
+
+```go
+//go:build linux && amd64
+
+package mypackage
+
+// This code only compiles for 64-bit Linux
+```
+
+**Runtime Detection:**
+
+```go
+import "runtime"
+
+if runtime.GOOS == "windows" {
+    // Windows-specific code
+} else if runtime.GOOS == "darwin" {
+    // macOS-specific code
+}
+```
+
+#### CGo Considerations
+
+This project is built with `CGO_ENABLED=0` for maximum portability and easier cross-compilation. The binaries are completely self-contained with no external dependencies.
+
+If you need CGo for a specific feature, you'll need to set up cross-compilation toolchains for each target platform.
+
+### Local Build (Traditional)
 
 ```bash
 make build
@@ -168,6 +347,20 @@ Create optimized builds for multiple platforms:
 ```bash
 make release
 ```
+
+This creates production-ready binaries for:
+
+- Linux (amd64 and arm64)
+- macOS (Intel and Apple Silicon)
+- Windows (amd64)
+
+All binaries are:
+
+- Optimized with `-trimpath` for reproducible builds
+- Built with `CGO_ENABLED=0` for static linking
+- Accompanied by SHA256 checksums
+
+**For detailed cross-platform development instructions, see [Cross-Platform Development Guide](docs/CROSS_PLATFORM.md).**
 
 ### Docker
 
@@ -187,8 +380,16 @@ gochat/
 │   └── server/          # Application entry point
 │       └── main.go
 ├── internal/            # Private application code
-│   ├── client/          # Client connection handling
-│   └── hub/             # Chat hub and message routing
+│   └── server/          # Core HTTP/WebSocket server components
+│       ├── client.go        # WebSocket client connection management
+│       ├── config.go        # Runtime configuration and security controls
+│       ├── handlers.go      # HTTP and WebSocket request handlers
+│       ├── hub.go           # Client registry and broadcast coordination
+│       ├── http_server.go   # HTTP server setup helpers
+│       ├── origin.go        # Origin validation helpers
+│       ├── rate_limiter.go  # Per-connection rate limiting
+│       ├── routes.go        # Route registration
+│       └── types.go         # Shared message and utility types
 ├── .github/
 │   └── workflows/
 │       └── ci.yml       # GitHub Actions CI pipeline
