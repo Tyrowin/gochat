@@ -31,7 +31,7 @@ endif
 
 # Platform-specific directories
 LINUX_DIR=$(BUILD_DIR)/linux
-DARWIN_DIR=$(BUILD_DIR)/darwin
+DARWIN_DIR=$(BUILD_DIR)/MacOS
 WINDOWS_DIR=$(BUILD_DIR)/windows
 
 # Build information
