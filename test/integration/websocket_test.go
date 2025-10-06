@@ -190,7 +190,9 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 	defer func() {
 		for _, conn := range connections {
 			if conn != nil {
-				conn.Close()
+				if err := conn.Close(); err != nil {
+					t.Logf("Failed to close connection: %v", err)
+				}
 			}
 		}
 	}()

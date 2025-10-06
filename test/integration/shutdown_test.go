@@ -116,14 +116,18 @@ func performGracefulShutdown(t *testing.T, httpServer *http.Server, hub *server.
 func verifyClientsDisconnected(t *testing.T, clients []*websocket.Conn, expectedCount int) {
 	closedClients := 0
 	for i, conn := range clients {
-		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+			t.Logf("Failed to set read deadline for client %d: %v", i, err)
+		}
 		_, _, err := conn.ReadMessage()
 		if err != nil {
 			closedClients++
 		} else {
 			t.Errorf("Client %d still connected after shutdown", i)
 		}
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			t.Logf("Failed to close client %d: %v", i, err)
+		}
 	}
 
 	if closedClients != expectedCount {
@@ -136,8 +140,16 @@ func verifyClientsDisconnected(t *testing.T, clients []*websocket.Conn, expected
 func TestShutdownWithActiveMessages(t *testing.T) {
 	hub, httpServer := setupMessageTestServer(t)
 	client1, client2 := connectMessageTestClients(t)
-	defer client1.Close()
-	defer client2.Close()
+	defer func() {
+		if err := client1.Close(); err != nil {
+			t.Logf("Failed to close client1: %v", err)
+		}
+	}()
+	defer func() {
+		if err := client2.Close(); err != nil {
+			t.Logf("Failed to close client2: %v", err)
+		}
+	}()
 
 	messagesSent, messagesReceived := runMessageExchange(t, client1, client2)
 	shutdownMessageTestServer(t, httpServer, hub)
@@ -218,9 +230,8 @@ func runMessageExchange(_ *testing.T, client1, client2 *websocket.Conn) (int, in
 // receiveMessages continuously receives messages on a WebSocket connection
 func receiveMessages(client *websocket.Conn, messagesReceived *int, mutex *sync.Mutex, stop chan struct{}) {
 	defer func() {
-		if r := recover(); r != nil {
-			// Silently recover from panics during shutdown
-		}
+		// Recover from panics during shutdown to prevent test failures
+		_ = recover()
 	}()
 
 	for {
@@ -228,7 +239,9 @@ func receiveMessages(client *websocket.Conn, messagesReceived *int, mutex *sync.
 		case <-stop:
 			return
 		default:
-			client.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+			if err := client.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+				return
+			}
 			_, _, err := client.ReadMessage()
 			if err == nil {
 				mutex.Lock()

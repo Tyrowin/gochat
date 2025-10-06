@@ -121,23 +121,19 @@ test-coverage-integration:
 ## lint: Run golangci-lint
 lint:
 	@echo "Running golangci-lint..."
-	@which golangci-lint > /dev/null || (echo "golangci-lint not found. Run 'make install-tools' first." && exit 1)
 	golangci-lint run --config .golangci.yml
 
 ## lint-fix: Run golangci-lint with auto-fix
 lint-fix:
 	@echo "Running golangci-lint with auto-fix..."
-	@which golangci-lint > /dev/null || (echo "golangci-lint not found. Run 'make install-tools' first." && exit 1)
 	golangci-lint run --config .golangci.yml --fix
 
 ## security-scan: Run security vulnerability scans
 security-scan:
 	@echo "Running security scans..."
 	@echo "1. Running govulncheck..."
-	@which govulncheck > /dev/null || go install golang.org/x/vuln/cmd/govulncheck@latest
 	govulncheck ./...
 	@echo "2. Running gosec..."
-	@which gosec > /dev/null || go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
 	gosec ./...
 
 ## deps-check: Check for outdated dependencies
@@ -147,7 +143,6 @@ deps-check:
 	go list -u -m all
 	@echo ""
 	@echo "Checking for vulnerabilities in dependencies..."
-	@which govulncheck > /dev/null || go install golang.org/x/vuln/cmd/govulncheck@latest
 	govulncheck ./...
 
 ## deps-update: Update dependencies
@@ -170,7 +165,6 @@ endif
 ## dev: Run the application in development mode (with auto-restart)
 dev:
 	@echo "Starting development server..."
-	@which air > /dev/null || (echo "Air not found. Install with: go install github.com/cosmtrek/air@latest" && exit 1)
 	air
 
 ## fmt: Format Go code

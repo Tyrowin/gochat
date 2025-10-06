@@ -107,7 +107,10 @@ func ConnectWebSocket(url string) (*websocket.Conn, error) {
 	headers := http.Header{}
 	headers.Set("Origin", "http://localhost:8080")
 
-	conn, _, err := dialer.Dial(url, headers)
+	conn, resp, err := dialer.Dial(url, headers)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	return conn, err
 }
 

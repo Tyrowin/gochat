@@ -15,6 +15,7 @@ import (
 
 const (
 	errMsgFailedToConnect = "Failed to connect: %v"
+	errMsgFailedToClose   = "Failed to close connection: %v"
 )
 
 // TestClientErrorHandling verifies that client properly handles various error conditions
@@ -122,7 +123,10 @@ func TestWriteErrorHandling(t *testing.T) {
 	header := http.Header{}
 	header.Set("Origin", s.URL)
 
-	ws, _, err := dialer.Dial(url, header)
+	ws, resp, err := dialer.Dial(url, header)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf(errMsgFailedToConnect, err)
 	}
@@ -134,7 +138,9 @@ func TestWriteErrorHandling(t *testing.T) {
 	}
 
 	// Close the connection to trigger errors on subsequent writes
-	ws.Close()
+	if err := ws.Close(); err != nil {
+		t.Logf(errMsgFailedToClose, err)
+	}
 
 	// Try to write after close - should fail gracefully
 	err = ws.WriteJSON(map[string]string{"content": "test2"})
@@ -164,14 +170,23 @@ func TestReadErrorHandling(t *testing.T) {
 	header := http.Header{}
 	header.Set("Origin", s.URL)
 
-	ws, _, err := dialer.Dial(url, header)
+	ws, resp, err := dialer.Dial(url, header)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf(errMsgFailedToConnect, err)
 	}
-	defer ws.Close()
+	defer func() {
+		if err := ws.Close(); err != nil {
+			t.Logf(errMsgFailedToClose, err)
+		}
+	}()
 
 	// Set a read deadline to force timeout
-	ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if err := ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatalf("Failed to set read deadline: %v", err)
+	}
 
 	// Try to read with deadline - should timeout gracefully
 	_, _, err = ws.ReadMessage()
@@ -206,11 +221,18 @@ func TestErrorLoggingContext(t *testing.T) {
 	header := http.Header{}
 	header.Set("Origin", s.URL)
 
-	ws, _, err := dialer.Dial(url, header)
+	ws, resp, err := dialer.Dial(url, header)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf(errMsgFailedToConnect, err)
 	}
-	defer ws.Close()
+	defer func() {
+		if err := ws.Close(); err != nil {
+			t.Logf(errMsgFailedToClose, err)
+		}
+	}()
 
 	// Send a message to ensure client is registered
 	err = ws.WriteJSON(map[string]string{"content": "test"})
