@@ -51,7 +51,7 @@ func TestGracefulShutdownWithClients(t *testing.T) {
 func setupShutdownTestServer(_ *testing.T, port string) (*server.Hub, *http.Server) {
 	config := server.NewConfig()
 	config.Port = port
-	config.AllowedOrigins = []string{testOriginURL, port}
+	config.AllowedOrigins = []string{testOriginURL, "http://localhost" + port}
 	server.SetConfig(config)
 
 	hub := server.NewHub()

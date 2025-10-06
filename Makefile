@@ -53,14 +53,26 @@ help:
 	@echo "Available targets:"
 	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed -e 's/^/ /'
 
-## build: Build the application binary for current platform
-build:
+## build: Build the application binary for current platform (with fmt and vet checks)
+build: fmt vet
 ifeq ($(OS),Windows_NT)
 	Write-Host "Building $(BINARY) for current platform..."
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN_PATH)
 	Write-Host "Binary built: $(BUILD_DIR)/$(BINARY)"
 else
 	@echo "Building $(BINARY) for current platform..."
+	@go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN_PATH)
+	@echo "Binary built: $(BUILD_DIR)/$(BINARY)"
+endif
+
+## build-raw: Build the application binary without running static checks
+build-raw:
+ifeq ($(OS),Windows_NT)
+	Write-Host "Building $(BINARY) for current platform (skipping checks)..."
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN_PATH)
+	Write-Host "Binary built: $(BUILD_DIR)/$(BINARY)"
+else
+	@echo "Building $(BINARY) for current platform (skipping checks)..."
 	@go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN_PATH)
 	@echo "Binary built: $(BUILD_DIR)/$(BINARY)"
 endif

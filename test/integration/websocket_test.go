@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -233,7 +234,7 @@ func sendMessageFromClient(t *testing.T, conn *websocket.Conn, content string) {
 
 // verifyMessageReceivedByOtherClients checks that all clients except sender receive the message
 func verifyMessageReceivedByOtherClients(t *testing.T, connections []*websocket.Conn, expectedContent string, senderIndex int) {
-	for i := 1; i < len(connections); i++ {
+	for i := 0; i < len(connections); i++ {
 		if i == senderIndex {
 			continue
 		}
@@ -340,7 +341,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 			}
 
 			// Send a test message
-			testMsg := "Test message " + string(rune('A'+i))
+			testMsg := "Test message " + strconv.Itoa(i)
 			if err := conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, testMsg)); err != nil {
 				t.Errorf("Failed to send message on iteration %d: %v", i, err)
 			}
@@ -378,7 +379,7 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 // launchConcurrentClients starts multiple WebSocket clients concurrently
 func launchConcurrentClients(wsURL, serverURL string, numClients int, done chan error) {
 	for i := 0; i < numClients; i++ {
-		message := "Message from client " + string(rune('0'+i))
+		message := "Message from client " + strconv.Itoa(i)
 		payload, err := json.Marshal(server.Message{Content: message})
 		if err != nil {
 			done <- fmt.Errorf("failed to marshal message for client %d: %w", i, err)

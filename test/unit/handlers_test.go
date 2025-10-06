@@ -18,7 +18,7 @@ const (
 	expectedHealthResponse = "GoChat server is running!"
 )
 
-// TestHeahHandlerUnit tests the health handler function in isolation.
+// TestHealthHandlerUnit tests the health handler function in isolation.
 // It verifies that the handler responds correctly to different HTTP methods
 // and returns the expected status code and response body.
 func TestHealthHandlerUnit(t *testing.T) {

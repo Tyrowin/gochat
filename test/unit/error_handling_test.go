@@ -192,7 +192,7 @@ func TestReadErrorHandling(t *testing.T) {
 	_, _, err = ws.ReadMessage()
 	if err == nil {
 		t.Log("Expected timeout error, got successful read")
-	} else if !errors.Is(err, io.EOF) && !websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
+	} else if errors.Is(err, io.EOF) || websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
 		// This is expected - timeout or close error
 		t.Logf("Got expected error: %v", err)
 	}
