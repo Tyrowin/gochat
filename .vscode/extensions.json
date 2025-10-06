@@ -1,4 +1,15 @@
 {
-  "recommendations": ["golang.go", "redhat.vscode-yaml"],
+  "recommendations": [
+    "golang.go",
+    "redhat.vscode-yaml",
+    "ms-vscode.makefile-tools",
+    "ms-vscode.powershell",
+    "eamodio.gitlens",
+    "davidanson.vscode-markdownlint",
+    "editorconfig.editorconfig",
+    "streetsidesoftware.code-spell-checker",
+    "ms-azuretools.vscode-docker",
+    "github.vscode-github-actions"
+  ],
   "unwantedRecommendations": []
 }

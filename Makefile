@@ -3,6 +3,12 @@
 # This Makefile provides convenient targets for development, testing, 
 # security scanning, and building the application.
 
+# Use PowerShell on Windows
+ifeq ($(OS),Windows_NT)
+SHELL := pwsh.exe
+.SHELLFLAGS := -NoProfile -Command
+endif
+
 .PHONY: help build clean test test-coverage lint lint-fix security-scan deps-check deps-update run dev fmt vet all ci-local install-tools docker-build docker-run
 
 # Default target
@@ -12,14 +18,32 @@
 BINARY_NAME=gochat
 BUILD_DIR=./bin
 MAIN_PATH=./cmd/server
-GO_FILES=$(shell find . -name '*.go' -not -path './vendor/*')
+GO_FILES=$(shell find . -name '*.go' -not -path './vendor/*' 2>/dev/null || dir /s /b *.go 2>nul | findstr /v "\\vendor\\")
 COVERAGE_FILE=coverage.out
 COVERAGE_HTML=coverage.html
 
+# Platform-specific binary name
+ifeq ($(OS),Windows_NT)
+BINARY=$(BINARY_NAME).exe
+else
+BINARY=$(BINARY_NAME)
+endif
+
+# Platform-specific directories
+LINUX_DIR=$(BUILD_DIR)/linux
+DARWIN_DIR=$(BUILD_DIR)/darwin
+WINDOWS_DIR=$(BUILD_DIR)/windows
+
 # Build information
+ifeq ($(OS),Windows_NT)
+VERSION ?= dev
+COMMIT ?= unknown
+BUILD_TIME ?= $(shell (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))
+else
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+endif
 
 # Build flags
 LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)"
@@ -29,22 +53,31 @@ help:
 	@echo "Available targets:"
 	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed -e 's/^/ /'
 
-## build: Build the application binary
-build: fmt vet
-	@echo "Building $(BINARY_NAME)..."
-	@mkdir -p $(BUILD_DIR)
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PATH)
-	@echo "Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
+## build: Build the application binary for current platform
+build:
+ifeq ($(OS),Windows_NT)
+	Write-Host "Building $(BINARY) for current platform..."
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN_PATH)
+	Write-Host "Binary built: $(BUILD_DIR)/$(BINARY)"
+else
+	@echo "Building $(BINARY) for current platform..."
+	@go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) $(MAIN_PATH)
+	@echo "Binary built: $(BUILD_DIR)/$(BINARY)"
+endif
 
 ## clean: Remove build artifacts and temporary files
 clean:
+ifeq ($(OS),Windows_NT)
+	Write-Host "Cleaning up..."
+	if (Test-Path $(BUILD_DIR)) { Remove-Item -Recurse -Force $(BUILD_DIR) }
+	go clean -cache -testcache -modcache
+	Write-Host "Clean completed"
+else
 	@echo "Cleaning up..."
 	@rm -rf $(BUILD_DIR)
-	@rm -f $(COVERAGE_FILE) $(COVERAGE_HTML)
-	@rm -f unit-$(COVERAGE_FILE) unit-$(COVERAGE_HTML)
-	@rm -f integration-$(COVERAGE_FILE) integration-$(COVERAGE_HTML)
 	@go clean -cache -testcache -modcache
 	@echo "Clean completed"
+endif
 
 ## test: Run all tests
 test:
@@ -126,8 +159,13 @@ deps-update:
 
 ## run: Build and run the application
 run: build
-	@echo "Running $(BINARY_NAME)..."
-	$(BUILD_DIR)/$(BINARY_NAME)
+ifeq ($(OS),Windows_NT)
+	Write-Host "Running $(BINARY)..."
+	$(BUILD_DIR)/$(BINARY)
+else
+	@echo "Running $(BINARY)..."
+	$(BUILD_DIR)/$(BINARY)
+endif
 
 ## dev: Run the application in development mode (with auto-restart)
 dev:
@@ -137,14 +175,13 @@ dev:
 
 ## fmt: Format Go code
 fmt:
-	@echo "Formatting code..."
-	go fmt ./...
-	@which goimports > /dev/null && goimports -w . || echo "goimports not found, skipping import formatting"
+	@echo Formatting code...
+	@go fmt ./...
 
 ## vet: Run go vet
 vet:
-	@echo "Running go vet..."
-	go vet ./...
+	@echo Running go vet...
+	@go vet ./...
 
 ## all: Run all checks and build
 all: clean fmt vet lint test build
@@ -211,12 +248,119 @@ docs:
 	@echo "Documentation server will be available at http://localhost:6060"
 	godoc -http=:6060
 
+# Cross-platform build targets
+## build-linux: Build for Linux (amd64)
+build-linux:
+ifeq ($(OS),Windows_NT)
+	if (-not (Test-Path $(LINUX_DIR))) { New-Item -ItemType Directory -Force -Path $(LINUX_DIR) }
+	Write-Host "Building for Linux (amd64)..."
+	$$env:CGO_ENABLED='0'; $$env:GOOS='linux'; $$env:GOARCH='amd64'; go build $(LDFLAGS) -o $(LINUX_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	Write-Host "Linux binary built: $(LINUX_DIR)/$(BINARY_NAME)-amd64"
+else
+	@mkdir -p $(LINUX_DIR)
+	@echo "Building for Linux (amd64)..."
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $(LINUX_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	@echo "Linux binary built: $(LINUX_DIR)/$(BINARY_NAME)-amd64"
+endif
+
+## build-linux-arm64: Build for Linux (arm64)
+build-linux-arm64:
+ifeq ($(OS),Windows_NT)
+	if (-not (Test-Path $(LINUX_DIR))) { New-Item -ItemType Directory -Force -Path $(LINUX_DIR) }
+	Write-Host "Building for Linux (arm64)..."
+	$$env:CGO_ENABLED='0'; $$env:GOOS='linux'; $$env:GOARCH='arm64'; go build $(LDFLAGS) -o $(LINUX_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	Write-Host "Linux ARM64 binary built: $(LINUX_DIR)/$(BINARY_NAME)-arm64"
+else
+	@mkdir -p $(LINUX_DIR)
+	@echo "Building for Linux (arm64)..."
+	@CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $(LINUX_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	@echo "Linux ARM64 binary built: $(LINUX_DIR)/$(BINARY_NAME)-arm64"
+endif
+
+## build-darwin: Build for macOS (Intel)
+build-darwin:
+ifeq ($(OS),Windows_NT)
+	if (-not (Test-Path $(DARWIN_DIR))) { New-Item -ItemType Directory -Force -Path $(DARWIN_DIR) }
+	Write-Host "Building for macOS (Intel)..."
+	$$env:CGO_ENABLED='0'; $$env:GOOS='darwin'; $$env:GOARCH='amd64'; go build $(LDFLAGS) -o $(DARWIN_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	Write-Host "macOS Intel binary built: $(DARWIN_DIR)/$(BINARY_NAME)-amd64"
+else
+	@mkdir -p $(DARWIN_DIR)
+	@echo "Building for macOS (Intel)..."
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $(DARWIN_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	@echo "macOS Intel binary built: $(DARWIN_DIR)/$(BINARY_NAME)-amd64"
+endif
+
+## build-darwin-arm64: Build for macOS (Apple Silicon)
+build-darwin-arm64:
+ifeq ($(OS),Windows_NT)
+	if (-not (Test-Path $(DARWIN_DIR))) { New-Item -ItemType Directory -Force -Path $(DARWIN_DIR) }
+	Write-Host "Building for macOS (Apple Silicon)..."
+	$$env:CGO_ENABLED='0'; $$env:GOOS='darwin'; $$env:GOARCH='arm64'; go build $(LDFLAGS) -o $(DARWIN_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	Write-Host "macOS ARM64 binary built: $(DARWIN_DIR)/$(BINARY_NAME)-arm64"
+else
+	@mkdir -p $(DARWIN_DIR)
+	@echo "Building for macOS (Apple Silicon)..."
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $(DARWIN_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	@echo "macOS ARM64 binary built: $(DARWIN_DIR)/$(BINARY_NAME)-arm64"
+endif
+
+## build-windows: Build for Windows (amd64)
+build-windows:
+ifeq ($(OS),Windows_NT)
+	if (-not (Test-Path $(WINDOWS_DIR))) { New-Item -ItemType Directory -Force -Path $(WINDOWS_DIR) }
+	Write-Host "Building for Windows (amd64)..."
+	$$env:CGO_ENABLED='0'; $$env:GOOS='windows'; $$env:GOARCH='amd64'; go build $(LDFLAGS) -o $(WINDOWS_DIR)/$(BINARY_NAME)-amd64.exe $(MAIN_PATH)
+	Write-Host "Windows binary built: $(WINDOWS_DIR)/$(BINARY_NAME)-amd64.exe"
+else
+	@mkdir -p $(WINDOWS_DIR)
+	@echo "Building for Windows (amd64)..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(WINDOWS_DIR)/$(BINARY_NAME)-amd64.exe $(MAIN_PATH)
+	@echo "Windows binary built: $(WINDOWS_DIR)/$(BINARY_NAME)-amd64.exe"
+endif
+
+## build-windows-arm64: Build for Windows (ARM64)
+build-windows-arm64:
+ifeq ($(OS),Windows_NT)
+	if (-not (Test-Path $(WINDOWS_DIR))) { New-Item -ItemType Directory -Force -Path $(WINDOWS_DIR) }
+	Write-Host "Building for Windows (ARM64)..."
+	$$env:CGO_ENABLED='0'; $$env:GOOS='windows'; $$env:GOARCH='arm64'; go build $(LDFLAGS) -o $(WINDOWS_DIR)/$(BINARY_NAME)-arm64.exe $(MAIN_PATH)
+	Write-Host "Windows ARM64 binary built: $(WINDOWS_DIR)/$(BINARY_NAME)-arm64.exe"
+else
+	@mkdir -p $(WINDOWS_DIR)
+	@echo "Building for Windows (ARM64)..."
+	@CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(LDFLAGS) -o $(WINDOWS_DIR)/$(BINARY_NAME)-arm64.exe $(MAIN_PATH)
+	@echo "Windows ARM64 binary built: $(WINDOWS_DIR)/$(BINARY_NAME)-arm64.exe"
+endif
+
+## build-all: Build for all supported platforms
+build-all: build-linux build-linux-arm64 build-darwin build-darwin-arm64 build-windows build-windows-arm64
+	@echo All platform binaries built successfully!
+
+## build-current: Build for current platform
+build-current:
+	@echo Building for current platform...
+	@CGO_ENABLED=0 go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)$(shell go env GOEXE) $(MAIN_PATH)
+	@echo Binary built for current platform: $(BUILD_DIR)/$(BINARY_NAME)$(shell go env GOEXE)
+
 # Create release build
-## release: Create optimized release build
+## release: Create optimized release build for all platforms
 release: clean fmt vet lint test
-	@echo "Creating release build..."
-	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 $(MAIN_PATH)
-	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-amd64 $(MAIN_PATH)
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe $(MAIN_PATH)
-	@echo "Release builds created in $(BUILD_DIR)/"
+	@echo Creating release builds...
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(LINUX_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(LINUX_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(DARWIN_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(DARWIN_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(WINDOWS_DIR)/$(BINARY_NAME)-amd64.exe $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(WINDOWS_DIR)/$(BINARY_NAME)-arm64.exe $(MAIN_PATH)
+	@echo Release builds created in $(BUILD_DIR)/
+	@echo Creating checksums...
+	@cd $(LINUX_DIR) && (sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt)
+	@cd $(DARWIN_DIR) && (sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt)
+	@cd $(WINDOWS_DIR) && (sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt)
+	@echo Checksums saved to each platform directory
+
+## list-platforms: List all supported GOOS/GOARCH combinations
+list-platforms:
+	@echo Supported platforms:
+	@go tool dist list

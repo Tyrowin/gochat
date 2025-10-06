@@ -1,0 +1,153 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build (Current Platform)",
+      "type": "shell",
+      "command": "make build-current",
+      "windows": {
+        "command": "go build -o ${workspaceFolder}\\bin\\gochat.exe ${workspaceFolder}\\cmd\\server"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Build All Platforms",
+      "type": "shell",
+      "command": "make build-all",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Run Server",
+      "type": "shell",
+      "command": "${workspaceFolder}/bin/gochat",
+      "windows": {
+        "command": "${workspaceFolder}\\bin\\gochat.exe"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dev (Hot Reload)",
+      "type": "shell",
+      "command": "air",
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Test All",
+      "type": "shell",
+      "command": "make test",
+      "windows": {
+        "command": "go test -v -race ./..."
+      },
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Test with Coverage",
+      "type": "shell",
+      "command": "make test-coverage",
+      "windows": {
+        "command": "go test -v -race -coverpkg=./cmd/...,./internal/... -coverprofile=coverage.out ./test/... && go tool cover -html=coverage.out"
+      },
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Lint",
+      "type": "shell",
+      "command": "make lint",
+      "windows": {
+        "command": "golangci-lint run --config .golangci.yml"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Security Scan",
+      "type": "shell",
+      "command": "make security-scan",
+      "windows": {
+        "command": "govulncheck ./... && gosec ./..."
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Full CI Check",
+      "type": "shell",
+      "command": "make ci-local",
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    },
+    {
+      "label": "Clean Build Artifacts",
+      "type": "shell",
+      "command": "make clean",
+      "windows": {
+        "command": "pwsh -Command if (Test-Path bin) { Remove-Item -Recurse -Force bin }; if (Test-Path tmp) { Remove-Item -Recurse -Force tmp }; if (Test-Path coverage.out) { Remove-Item coverage.out }"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Create Release",
+      "type": "shell",
+      "command": "make release",
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": ["$go"]
+    }
+  ]
+}
