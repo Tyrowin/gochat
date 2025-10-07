@@ -224,7 +224,12 @@ func runMessageExchange(_ *testing.T, client1, client2 *websocket.Conn) (int, in
 	time.Sleep(200 * time.Millisecond)
 	close(stopReceiving)
 
-	return messagesSent, messagesReceived
+	// Read messagesReceived with mutex protection to avoid race condition
+	receiveMutex.Lock()
+	finalMessagesReceived := messagesReceived
+	receiveMutex.Unlock()
+
+	return messagesSent, finalMessagesReceived
 }
 
 // receiveMessages continuously receives messages on a WebSocket connection
