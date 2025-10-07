@@ -3,6 +3,9 @@
 package server
 
 import (
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -112,4 +115,66 @@ func currentConfig() Config {
 func NewConfig() *Config {
 	cfg := defaultConfig()
 	return &cfg
+}
+
+// NewConfigFromEnv creates a Config instance from environment variables.
+// Falls back to default values if environment variables are not set.
+func NewConfigFromEnv() *Config {
+	cfg := defaultConfig()
+
+	// Load SERVER_PORT
+	if port := os.Getenv("SERVER_PORT"); port != "" {
+		cfg.Port = port
+	}
+
+	// Load ALLOWED_ORIGINS
+	if origins := os.Getenv("ALLOWED_ORIGINS"); origins != "" {
+		cfg.AllowedOrigins = parseOrigins(origins)
+	}
+
+	// Load MAX_MESSAGE_SIZE
+	if maxSize := os.Getenv("MAX_MESSAGE_SIZE"); maxSize != "" {
+		cfg.MaxMessageSize = parseMaxMessageSize(maxSize, cfg.MaxMessageSize)
+	}
+
+	// Load RATE_LIMIT_BURST
+	if burst := os.Getenv("RATE_LIMIT_BURST"); burst != "" {
+		cfg.RateLimit.Burst = parseIntValue(burst, cfg.RateLimit.Burst)
+	}
+
+	// Load RATE_LIMIT_REFILL_INTERVAL
+	if interval := os.Getenv("RATE_LIMIT_REFILL_INTERVAL"); interval != "" {
+		cfg.RateLimit.RefillInterval = parseRefillInterval(interval, cfg.RateLimit.RefillInterval)
+	}
+
+	return &cfg
+}
+
+func parseOrigins(origins string) []string {
+	parts := strings.Split(origins, ",")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+func parseMaxMessageSize(value string, defaultValue int64) int64 {
+	if size, err := strconv.ParseInt(value, 10, 64); err == nil && size > 0 {
+		return size
+	}
+	return defaultValue
+}
+
+func parseIntValue(value string, defaultValue int) int {
+	if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+		return parsed
+	}
+	return defaultValue
+}
+
+func parseRefillInterval(value string, defaultValue time.Duration) time.Duration {
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	return defaultValue
 }

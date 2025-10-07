@@ -1,0 +1,43 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+
+# Test files
+test/
+*_test.go
+coverage.out
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+bin/
+tmp/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CI/CD
+.github/
+
+# Makefile (optional - uncomment if you want to exclude it)
+# Makefile
+
+# License (optional - uncomment if you want to exclude it)
+# LICENSE
