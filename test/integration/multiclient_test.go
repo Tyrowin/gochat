@@ -453,18 +453,6 @@ func sendRapidMessages(t *testing.T, connections []*websocket.Conn, messagesPerC
 	}
 }
 
-// verifyRapidMessagesReceived verifies that each client received the expected
-// number of messages from other clients.
-func verifyRapidMessagesReceived(t *testing.T, connections []*websocket.Conn, messagesPerClient, numClients int) {
-	expectedMessagesPerClient := messagesPerClient * (numClients - 1)
-	for clientID := 0; clientID < numClients; clientID++ {
-		receivedCount := countReceivedMessages(t, connections[clientID], expectedMessagesPerClient)
-		if receivedCount != expectedMessagesPerClient {
-			t.Errorf("Client %d: expected %d messages, got %d", clientID, expectedMessagesPerClient, receivedCount)
-		}
-	}
-}
-
 // countReceivedMessages counts how many valid messages a client receives
 // within a timeout period. Handles batched messages separated by newlines.
 func countReceivedMessages(t *testing.T, conn *websocket.Conn, maxExpected int) int {

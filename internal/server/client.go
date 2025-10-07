@@ -56,6 +56,9 @@ func (c *Client) GetSendChan() <-chan []byte {
 
 // setupReadConnection configures read deadlines and pong handler for the WebSocket connection
 func (c *Client) setupReadConnection() {
+	if c.conn == nil {
+		return
+	}
 	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
 		log.Printf("Error setting initial read deadline for %s: %v", c.addr, err)
 	}
@@ -139,31 +142,46 @@ func (c *Client) processMessage(rawMessage []byte) bool {
 	return true
 }
 
-func (c *Client) readPump() {
-	defer func() {
-		c.hub.unregister <- c
+// cleanupReadPump handles cleanup tasks when readPump exits
+func (c *Client) cleanupReadPump() {
+	c.hub.unregister <- c
+	if c.conn != nil {
 		if err := c.conn.Close(); err != nil {
 			if !isExpectedCloseError(err) {
 				log.Printf("Error closing connection in readPump: %v", err)
 			}
 		}
-	}()
+	}
+}
+
+// handleReadMessage processes a single message read from the WebSocket
+func (c *Client) handleReadMessage() bool {
+	_, rawMessage, err := c.conn.ReadMessage()
+	if err != nil {
+		return c.handleReadError(err)
+	}
+
+	if !c.checkRateLimit() {
+		return false
+	}
+
+	c.processMessage(rawMessage)
+	return false
+}
+
+func (c *Client) readPump() {
+	defer c.cleanupReadPump()
+
+	if c.conn == nil {
+		return
+	}
 
 	c.setupReadConnection()
 
 	for {
-		_, rawMessage, err := c.conn.ReadMessage()
-		if err != nil {
-			if c.handleReadError(err) {
-				break
-			}
+		if c.handleReadMessage() {
+			break
 		}
-
-		if !c.checkRateLimit() {
-			continue
-		}
-
-		c.processMessage(rawMessage)
 	}
 }
 
@@ -191,6 +209,9 @@ func (c *Client) processWriteEvent(ticker *time.Ticker) bool {
 
 // closeConnection safely closes the WebSocket connection with proper error handling
 func (c *Client) closeConnection() {
+	if c.conn == nil {
+		return
+	}
 	if err := c.conn.Close(); err != nil {
 		// Only log unexpected connection close errors
 		if !isExpectedCloseError(err) {
@@ -201,6 +222,9 @@ func (c *Client) closeConnection() {
 
 // handleMessage processes outgoing messages and returns false if the connection should be closed
 func (c *Client) handleMessage(message []byte, ok bool) bool {
+	if c.conn == nil {
+		return false
+	}
 	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		log.Printf("Error setting write deadline for %s: %v", c.addr, err)
 		return false
@@ -215,6 +239,9 @@ func (c *Client) handleMessage(message []byte, ok bool) bool {
 
 // writeCloseMessage sends a close message to the client
 func (c *Client) writeCloseMessage() bool {
+	if c.conn == nil {
+		return false
+	}
 	if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
 		if !isExpectedCloseError(err) {
 			log.Printf("Error writing close message to %s: %v", c.addr, err)
@@ -225,6 +252,9 @@ func (c *Client) writeCloseMessage() bool {
 
 // writeTextMessage writes a text message and any queued messages
 func (c *Client) writeTextMessage(message []byte) bool {
+	if c.conn == nil {
+		return false
+	}
 	w, err := c.conn.NextWriter(websocket.TextMessage)
 	if err != nil {
 		log.Printf("Error creating writer for %s: %v", c.addr, err)
@@ -286,6 +316,9 @@ func (c *Client) closeWriter(w io.WriteCloser) bool {
 
 // handlePing sends a ping message to keep the connection alive
 func (c *Client) handlePing() bool {
+	if c.conn == nil {
+		return false
+	}
 	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		log.Printf("Error setting write deadline for ping to %s: %v", c.addr, err)
 		return false

@@ -228,9 +228,11 @@ func (h *Hub) shutdownClients() {
 
 	// Close all client connections
 	for _, client := range clients {
-		if err := client.conn.Close(); err != nil {
-			if !isExpectedCloseError(err) {
-				log.Printf("Error closing client connection from %s: %v", client.addr, err)
+		if client.conn != nil {
+			if err := client.conn.Close(); err != nil {
+				if !isExpectedCloseError(err) {
+					log.Printf("Error closing client connection from %s: %v", client.addr, err)
+				}
 			}
 		}
 	}

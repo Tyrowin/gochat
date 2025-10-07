@@ -6,6 +6,7 @@
 package unit
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -368,7 +369,7 @@ func TestHubShutdown(t *testing.T) {
 
 		// Register some clients
 		for i := 0; i < 3; i++ {
-			client := server.NewClient(nil, hub, "127.0.0.1:"+string(rune(12340+i)))
+			client := server.NewClient(nil, hub, "127.0.0.1:"+strconv.Itoa(12340+i))
 			select {
 			case hub.GetRegisterChan() <- client:
 			case <-time.After(100 * time.Millisecond):
