@@ -7,6 +7,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -242,7 +243,8 @@ func verifyMessageReceivedByOtherClients(t *testing.T, connections []*websocket.
 	}
 }
 
-// verifyClientReceivesMessage verifies a single client receives the expected message
+// verifyClientReceivesMessage verifies a single client receives the expected message.
+// Handles batched messages separated by newlines.
 func verifyClientReceivesMessage(t *testing.T, conn *websocket.Conn, expectedContent string, clientIndex int) {
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Errorf("Failed to set read deadline for client %d: %v", clientIndex, err)
@@ -257,16 +259,32 @@ func verifyClientReceivesMessage(t *testing.T, conn *websocket.Conn, expectedCon
 
 	if messageType != websocket.TextMessage {
 		t.Errorf("Client %d: Expected text message, got type %d", clientIndex, messageType)
-	}
-
-	var received server.Message
-	if err := json.Unmarshal(message, &received); err != nil {
-		t.Errorf("Client %d: Failed to unmarshal message: %v", clientIndex, err)
 		return
 	}
 
-	if received.Content != expectedContent {
-		t.Errorf("Client %d: Expected content %q, got %q", clientIndex, expectedContent, received.Content)
+	// Handle batched messages - split by newline and check each part
+	parts := bytes.Split(message, []byte("\n"))
+	found := false
+
+	for _, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+
+		var received server.Message
+		if err := json.Unmarshal(part, &received); err != nil {
+			t.Errorf("Client %d: Failed to unmarshal message part: %v", clientIndex, err)
+			continue
+		}
+
+		if received.Content == expectedContent {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Errorf("Client %d: Expected content %q not found in received message(s)", clientIndex, expectedContent)
 	}
 }
 

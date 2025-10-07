@@ -15,9 +15,13 @@ A high-performance, production-ready WebSocket chat server built with Go. GoChat
 - **Production Ready** - Comprehensive testing, CI/CD pipeline, and deployment guides
 - **Cross-platform** - Build and run on Windows, macOS, and Linux
 - **Zero Dependencies** - Statically linked binaries with no external runtime dependencies
-- **Easy Deployment** - Simple binary deployment with reverse proxy support
+- **Docker Support** - Production-ready containerization with multi-stage builds
+- **Environment Configuration** - Easy configuration via environment variables
+- **Easy Deployment** - Simple binary or container deployment with reverse proxy support
 
 ## Quick Start
+
+### Local Build
 
 ```bash
 # Clone the repository
@@ -31,19 +35,42 @@ make build
 ./bin/gochat
 ```
 
+### Docker
+
+```bash
+# Using Docker Compose (recommended)
+docker-compose up -d
+
+# Or build and run manually
+docker build -t gochat:latest .
+docker run -d -p 8080:8080 --name gochat gochat:latest
+```
+
+### Configuration
+
+GoChat can be configured using environment variables. Copy `.env.example` to `.env` and customize:
+
+```bash
+cp .env.example .env
+# Edit .env with your settings
+```
+
 The server starts on `http://localhost:8080`. Visit `http://localhost:8080/test` to try the interactive test page.
 
 ## Documentation
 
 ### Getting Started
+
 - **[Getting Started Guide](docs/GETTING_STARTED.md)** - Installation, building, and running the server
 - **[API Documentation](docs/API.md)** - WebSocket API reference and code examples
 
 ### Deployment
+
 - **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment with Nginx/Caddy, TLS/WSS setup, and process management
 - **[Security Documentation](docs/SECURITY.md)** - Security features, configuration, and best practices
 
 ### Development
+
 - **[Development Guide](docs/DEVELOPMENT.md)** - Development setup, testing, and CI/CD
 - **[Building Guide](docs/BUILDING.md)** - Build instructions and cross-compilation
 - **[Contributing Guide](docs/CONTRIBUTING.md)** - How to contribute to the project
@@ -55,9 +82,9 @@ The server starts on `http://localhost:8080`. Visit `http://localhost:8080/test`
 GoChat follows a clean, modular architecture:
 
 ```
-Client (Browser/App) 
+Client (Browser/App)
     ↓ WebSocket (ws:// or wss://)
-Reverse Proxy (Nginx/Caddy) 
+Reverse Proxy (Nginx/Caddy)
     ↓ HTTP
 GoChat Server (Go)
     ├── Hub (Message Broker)

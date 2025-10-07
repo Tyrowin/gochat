@@ -32,7 +32,7 @@ import (
 func main() {
 	fmt.Println("Starting GoChat server...")
 
-	config := server.NewConfig()
+	config := server.NewConfigFromEnv()
 	server.SetConfig(config)
 	server.StartHub()
 	mux := server.SetupRoutes()

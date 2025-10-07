@@ -379,50 +379,56 @@ stdout_logfile=/var/log/gochat/gochat.log
 
 ## Docker Deployment
 
-### Dockerfile
+GoChat includes production-ready Docker support with a multi-stage build process, minimal image size, and security best practices.
 
-**File:** `Dockerfile`
+### Quick Start with Docker
 
-```dockerfile
-# Build stage
-FROM golang:1.25.1-alpine AS builder
+**1. Copy and configure environment file:**
 
-WORKDIR /build
-
-# Copy go mod files
-COPY go.mod go.sum ./
-RUN go mod download
-
-# Copy source code
-COPY . .
-
-# Build binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo \
-    -ldflags '-extldflags "-static"' \
-    -o gochat ./cmd/server
-
-# Runtime stage
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
-
-WORKDIR /app
-
-# Copy binary from build stage
-COPY --from=builder /build/gochat .
-
-# Non-root user
-RUN adduser -D -u 1000 gochat && \
-    chown -R gochat:gochat /app
-
-USER gochat
-
-EXPOSE 8080
-
-CMD ["./gochat"]
+```bash
+cp .env.example .env
+# Edit .env with your configuration
 ```
 
-### Docker Compose
+**2. Build and run with Docker Compose:**
+
+```bash
+docker-compose up -d
+```
+
+**3. Check logs:**
+
+```bash
+docker-compose logs -f gochat
+```
+
+### Environment Configuration
+
+GoChat can be configured using environment variables. See `.env.example` for all available options:
+
+```bash
+# Server Configuration
+SERVER_PORT=:8080
+
+# Allowed Origins for CORS (comma-separated)
+ALLOWED_ORIGINS=http://localhost:8080,https://chat.example.com
+
+# Maximum Message Size (bytes)
+MAX_MESSAGE_SIZE=512
+
+# Rate Limiting
+RATE_LIMIT_BURST=5
+RATE_LIMIT_REFILL_INTERVAL=1
+```
+
+### Docker Compose Configuration
+
+The included `docker-compose.yml` provides:
+
+- Container health checks
+- Automatic restarts
+- Network isolation
+- Easy environment configuration
 
 **File:** `docker-compose.yml`
 
@@ -431,23 +437,210 @@ version: "3.8"
 
 services:
   gochat:
-    build: .
-    container_name: gochat
-    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gochat-server
     ports:
       - "8080:8080"
     environment:
-      - TZ=UTC
-    networks:
-      - gochat-network
+      - SERVER_PORT=:8080
+      - ALLOWED_ORIGINS=http://localhost:8080,https://chat.example.com
+      - MAX_MESSAGE_SIZE=512
+      - RATE_LIMIT_BURST=5
+      - RATE_LIMIT_REFILL_INTERVAL=1
+    restart: unless-stopped
     healthcheck:
       test:
         [
           "CMD",
           "wget",
-          "--quiet",
+          "--no-verbose",
           "--tries=1",
           "--spider",
+          "http://localhost:8080/",
+        ]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    networks:
+      - gochat-network
+
+networks:
+  gochat-network:
+    driver: bridge
+```
+
+### Manual Docker Build and Run
+
+**Build the image:**
+
+```bash
+docker build -t gochat:latest .
+```
+
+**Run the container:**
+
+```bash
+docker run -d \
+  --name gochat \
+  -p 8080:8080 \
+  -e SERVER_PORT=:8080 \
+  -e ALLOWED_ORIGINS="https://chat.example.com" \
+  -e MAX_MESSAGE_SIZE=512 \
+  -e RATE_LIMIT_BURST=10 \
+  -e RATE_LIMIT_REFILL_INTERVAL=2 \
+  --restart unless-stopped \
+  gochat:latest
+```
+
+### Dockerfile Details
+
+The Dockerfile uses a multi-stage build process:
+
+**Stage 1: Build**
+
+- Based on `golang:1.25.1-alpine`
+- Compiles the application with optimizations
+- Strips debug information to reduce binary size
+
+**Stage 2: Runtime**
+
+- Based on `alpine:3.20` (minimal size)
+- Runs as non-root user (security)
+- Includes health check
+- Only contains the compiled binary and essential dependencies
+
+### Production Docker Deployment
+
+**1. Build for production:**
+
+```bash
+docker build --no-cache -t gochat:1.0.0 .
+```
+
+**2. Tag for registry:**
+
+```bash
+docker tag gochat:1.0.0 your-registry.com/gochat:1.0.0
+docker tag gochat:1.0.0 your-registry.com/gochat:latest
+```
+
+**3. Push to registry:**
+
+```bash
+docker push your-registry.com/gochat:1.0.0
+docker push your-registry.com/gochat:latest
+```
+
+**4. Deploy on server:**
+
+```bash
+# Pull the image
+docker pull your-registry.com/gochat:1.0.0
+
+# Run with production config
+docker run -d \
+  --name gochat \
+  -p 8080:8080 \
+  --env-file .env \
+  --restart always \
+  your-registry.com/gochat:1.0.0
+```
+
+### Docker Behind Reverse Proxy
+
+When running Docker behind Nginx or Caddy:
+
+**docker-compose.yml:**
+
+```yaml
+services:
+  gochat:
+    build: .
+    expose:
+      - "8080"
+    environment:
+      - SERVER_PORT=:8080
+      - ALLOWED_ORIGINS=https://chat.example.com
+    networks:
+      - web
+
+networks:
+  web:
+    external: true
+```
+
+**Nginx configuration:**
+
+```nginx
+upstream gochat {
+    server gochat:8080;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name chat.example.com;
+
+    location / {
+        proxy_pass http://gochat;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+### Docker Management Commands
+
+```bash
+# View logs
+docker-compose logs -f gochat
+
+# Restart container
+docker-compose restart gochat
+
+# Stop and remove
+docker-compose down
+
+# Update and redeploy
+docker-compose pull
+docker-compose up -d
+
+# Check health status
+docker inspect --format='{{.State.Health.Status}}' gochat-server
+
+# Execute command in container
+docker exec -it gochat-server /bin/sh
+```
+
+### Security Best Practices
+
+The Dockerfile includes several security features:
+
+1. **Non-root user:** Application runs as user `gochat` (UID 1000)
+2. **Minimal base image:** Alpine Linux reduces attack surface
+3. **No unnecessary tools:** Only essential runtime dependencies
+4. **Read-only filesystem:** Can be enforced with `--read-only` flag
+5. **Health checks:** Automated container health monitoring
+
+### Docker Performance Optimization
+
+**Multi-stage build benefits:**
+
+- Final image size: ~15MB (vs ~1GB with full Go image)
+- Faster deployment and startup
+- Reduced network transfer time
+- Lower storage costs
+
+**Build cache optimization:**
+
+- Dependencies downloaded separately for better caching
+- Source code copied last to maximize cache hits
+
           "http://localhost:8080/",
         ]
       interval: 30s
@@ -456,9 +649,10 @@ services:
       start_period: 40s
 
 networks:
-  gochat-network:
-    driver: bridge
-```
+gochat-network:
+driver: bridge
+
+````
 
 ### Build and Run
 
@@ -484,7 +678,7 @@ docker stop gochat
 
 # Remove
 docker rm gochat
-```
+````
 
 ## Monitoring and Logging
 
