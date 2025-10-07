@@ -178,10 +178,7 @@ func (c *Client) readPump() {
 
 	c.setupReadConnection()
 
-	for {
-		if c.handleReadMessage() {
-			break
-		}
+	for !c.handleReadMessage() { //nolint:revive // empty body is intentional
 	}
 }
 

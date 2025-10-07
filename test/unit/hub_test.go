@@ -13,6 +13,8 @@ import (
 	"github.com/Tyrowin/gochat/internal/server"
 )
 
+const shutdownErrorMsg = "Failed to shutdown hub: %v"
+
 // TestNewHub tests the hub creation function.
 // It verifies that NewHub returns a properly initialized Hub
 // with all necessary channels and data structures.
@@ -173,7 +175,11 @@ func TestConcurrentHubOperations(t *testing.T) {
 func TestHubClientRegistrationChannel(t *testing.T) {
 	hub := server.NewHub()
 	go hub.Run()
-	defer hub.Shutdown(time.Second)
+	defer func() {
+		if err := hub.Shutdown(time.Second); err != nil {
+			t.Errorf(shutdownErrorMsg, err)
+		}
+	}()
 	time.Sleep(10 * time.Millisecond)
 
 	t.Run("Nil client registration is ignored", func(t *testing.T) {
@@ -213,7 +219,11 @@ func TestHubClientRegistrationChannel(t *testing.T) {
 func TestHubClientUnregistration(t *testing.T) {
 	hub := server.NewHub()
 	go hub.Run()
-	defer hub.Shutdown(time.Second)
+	defer func() {
+		if err := hub.Shutdown(time.Second); err != nil {
+			t.Errorf(shutdownErrorMsg, err)
+		}
+	}()
 	time.Sleep(10 * time.Millisecond)
 
 	t.Run("Unregister channel is non-blocking", func(t *testing.T) {
@@ -274,7 +284,11 @@ func TestHubClientUnregistration(t *testing.T) {
 func TestHubBroadcastMessage(t *testing.T) {
 	hub := server.NewHub()
 	go hub.Run()
-	defer hub.Shutdown(time.Second)
+	defer func() {
+		if err := hub.Shutdown(time.Second); err != nil {
+			t.Errorf(shutdownErrorMsg, err)
+		}
+	}()
 	time.Sleep(10 * time.Millisecond)
 
 	t.Run("Broadcast with nil sender", func(t *testing.T) {
@@ -390,7 +404,11 @@ func TestHubShutdown(t *testing.T) {
 func TestHubChannelsCommunication(t *testing.T) {
 	hub := server.NewHub()
 	go hub.Run()
-	defer hub.Shutdown(time.Second)
+	defer func() {
+		if err := hub.Shutdown(time.Second); err != nil {
+			t.Errorf(shutdownErrorMsg, err)
+		}
+	}()
 	time.Sleep(10 * time.Millisecond)
 
 	t.Run("Broadcast channel accepts messages", func(t *testing.T) {
