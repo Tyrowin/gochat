@@ -1,4 +1,4 @@
-# GitHub Copilot Instructions for GoChat
+# Agent Instructions for GoChat
 
 ## Project Overview
 
