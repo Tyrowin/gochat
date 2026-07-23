@@ -1,4 +1,4 @@
-// Package unit contains unit tests for individual components of the GoChat server.
+// Package unit contains unit tests for individual components of the Blip server.
 //
 // These tests focus on testing specific functions and methods in isolation,
 // using mocks and stubs where necessary to avoid dependencies on external systems.
@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/gochat/internal/server"
+	"github.com/maltemindedal/blip/internal/server"
 )
 
 const (
-	expectedHealthResponse = "GoChat server is running!"
+	expectedHealthResponse = "Blip server is running!"
 )
 
 // TestHealthHandlerUnit tests the health handler function in isolation.

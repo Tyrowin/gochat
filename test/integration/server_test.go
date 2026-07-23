@@ -1,4 +1,4 @@
-// Package integration contains integration tests for the GoChat server.
+// Package integration contains integration tests for the Blip server.
 //
 // These tests verify that multiple components work together correctly by testing
 // the complete system behavior with real HTTP servers, WebSocket connections,
@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/maltemindedal/gochat/internal/server"
+	"github.com/maltemindedal/blip/internal/server"
 )
 
 // Test error message constants

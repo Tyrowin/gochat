@@ -1,10 +1,10 @@
 # The `version` key is obsolete in the Compose Specification and is omitted.
 services:
-  gochat:
+  blip:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: gochat-server
+    container_name: blip-server
     ports:
       - "8080:8080"
     environment:
@@ -30,8 +30,8 @@ services:
     # env_file:
     #   - .env
     networks:
-      - gochat-network
+      - blip-network
 
 networks:
-  gochat-network:
+  blip-network:
     driver: bridge

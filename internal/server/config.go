@@ -1,5 +1,5 @@
 // Package server provides configuration helpers that define runtime defaults,
-// validation, and rate-limiting parameters for the GoChat service.
+// validation, and rate-limiting parameters for the Blip service.
 package server
 
 import (

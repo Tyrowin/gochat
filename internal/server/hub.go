@@ -1,5 +1,5 @@
 // Package server coordinates client registration, message broadcast, and
-// connection cleanup for the GoChat WebSocket system via the Hub type.
+// connection cleanup for the Blip WebSocket system via the Hub type.
 package server
 
 import (

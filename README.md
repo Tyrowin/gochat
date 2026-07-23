@@ -1,10 +1,10 @@
-# GoChat
+# Blip
 
 A small WebSocket broadcast server in Go — one binary, one dependency, no database.
 
-[![CI Pipeline](https://github.com/maltemindedal/gochat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/maltemindedal/gochat/actions/workflows/ci.yml)
+[![CI Pipeline](https://github.com/maltemindedal/blip/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/maltemindedal/blip/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/maltemindedal/gochat)](https://golang.org/)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/maltemindedal/blip)](https://golang.org/)
 
 Clients connect to `/ws`, send JSON messages, and every other connected client receives them. That
 is the whole feature set: no rooms, no history, no accounts. What it does bring is the operational
@@ -17,15 +17,15 @@ real-time relay behind your own application, or as a starting point to build on.
 Requires **Go 1.26.5 or later** (`go version`) and Git. GNU Make is optional.
 
 ```bash
-git clone https://github.com/maltemindedal/gochat.git
-cd gochat
+git clone https://github.com/maltemindedal/blip.git
+cd blip
 
-make build            # or: go build -o bin/gochat ./cmd/server
-./bin/gochat          # Windows: .\bin\gochat.exe
+make build            # or: go build -o bin/blip ./cmd/server
+./bin/blip          # Windows: .\bin\blip.exe
 ```
 
 ```
-time=2026-07-23T15:51:57.081+02:00 level=INFO msg="starting GoChat server" version=dev commit=unknown build_time=unknown
+time=2026-07-23T15:51:57.081+02:00 level=INFO msg="starting Blip server" version=dev commit=unknown build_time=unknown
 time=2026-07-23T15:51:57.081+02:00 level=INFO msg="hub started and ready to manage WebSocket connections"
 time=2026-07-23T15:51:57.082+02:00 level=INFO msg="server listening" addr=:8080
 ```
@@ -62,7 +62,7 @@ ALLOWED_ORIGINS=http://localhost:8080,http://localhost:3000 \
 MAX_MESSAGE_SIZE=512 \
 RATE_LIMIT_BURST=5 \
 LOG_LEVEL=info \
-./bin/gochat
+./bin/blip
 ```
 
 ## Documentation
@@ -84,7 +84,7 @@ Full index: [docs/README.md](docs/README.md).
 | Endpoint | Purpose                                                          |
 | -------- | ---------------------------------------------------------------- |
 | `/ws`    | WebSocket endpoint. `GET` only; rejects disallowed origins with 403 |
-| `/`      | Health check returning `GoChat server is running!` (also the catch-all for unmatched paths) |
+| `/`      | Health check returning `Blip server is running!` (also the catch-all for unmatched paths) |
 | `/test`  | Built-in browser test page — development only                     |
 
 ## Project structure

@@ -1,4 +1,4 @@
-# Makefile for gochat
+# Makefile for blip
 # 
 # This Makefile provides convenient targets for development, testing, 
 # security scanning, and building the application.
@@ -15,7 +15,7 @@ endif
 .DEFAULT_GOAL := help
 
 # Variables
-BINARY_NAME=gochat
+BINARY_NAME=blip
 BUILD_DIR=./bin
 MAIN_PATH=./cmd/server
 GO_FILES=$(shell find . -name '*.go' -not -path './vendor/*' 2>/dev/null || dir /s /b *.go 2>nul | findstr /v "\\vendor\\")

@@ -1,6 +1,6 @@
 # Getting Started
 
-Build GoChat, run it, and watch two browser tabs chat with each other. About 10 minutes.
+Build Blip, run it, and watch two browser tabs chat with each other. About 10 minutes.
 
 ## Prerequisites
 
@@ -15,8 +15,8 @@ Build GoChat, run it, and watch two browser tabs chat with each other. About 10 
 ## 1. Clone the repository
 
 ```bash
-git clone https://github.com/maltemindedal/gochat.git
-cd gochat
+git clone https://github.com/maltemindedal/blip.git
+cd blip
 ```
 
 ## 2. Build the server
@@ -28,8 +28,8 @@ make build
 Without Make:
 
 ```bash
-go build -o bin/gochat ./cmd/server        # macOS / Linux
-go build -o bin/gochat.exe ./cmd/server    # Windows
+go build -o bin/blip ./cmd/server        # macOS / Linux
+go build -o bin/blip.exe ./cmd/server    # Windows
 ```
 
 The binary lands in `bin/`. `make build` runs `go fmt` and `go vet` first, so a formatting or vet
@@ -38,8 +38,8 @@ failure stops the build.
 ## 3. Run it
 
 ```bash
-./bin/gochat          # macOS / Linux
-.\bin\gochat.exe      # Windows PowerShell
+./bin/blip          # macOS / Linux
+.\bin\blip.exe      # Windows PowerShell
 ```
 
 Or `make run`, which rebuilds first.
@@ -47,7 +47,7 @@ Or `make run`, which rebuilds first.
 Expected output:
 
 ```
-time=2026-07-23T15:14:04.081+02:00 level=INFO msg="starting GoChat server" version=dev commit=unknown build_time=unknown
+time=2026-07-23T15:14:04.081+02:00 level=INFO msg="starting Blip server" version=dev commit=unknown build_time=unknown
 time=2026-07-23T15:14:04.081+02:00 level=INFO msg="hub started and ready to manage WebSocket connections"
 time=2026-07-23T15:14:04.082+02:00 level=INFO msg="server listening" addr=:8080
 ```
@@ -59,7 +59,7 @@ The server is now on <http://localhost:8080>. Confirm it in another terminal:
 
 ```bash
 curl http://localhost:8080/
-# GoChat server is running!
+# Blip server is running!
 ```
 
 ## 4. Chat with yourself
@@ -108,14 +108,14 @@ messages/second per connection. All five settings are environment variables — 
 
 **`address already in use` / `bind: Only one usage of each socket address`**
 Something else holds port 8080. Find it with `lsof -i :8080` (macOS/Linux) or
-`netstat -ano | findstr :8080` (Windows), or move GoChat: `SERVER_PORT=:9090 ./bin/gochat`.
+`netstat -ano | findstr :8080` (Windows), or move Blip: `SERVER_PORT=:9090 ./bin/blip`.
 
 **The test page says "Connection error" and the log says `Blocked WebSocket connection from disallowed origin`**
 You reached the page at a hostname other than `localhost:8080` — `127.0.0.1:8080` counts as a
 different origin. Either use `http://localhost:8080/test` or allow the origin you are using:
 
 ```bash
-ALLOWED_ORIGINS=http://localhost:8080,http://127.0.0.1:8080 ./bin/gochat
+ALLOWED_ORIGINS=http://localhost:8080,http://127.0.0.1:8080 ./bin/blip
 ```
 
 **Messages stop arriving but the connection stays open**
@@ -123,7 +123,7 @@ You are hitting the rate limit — more than 5 messages per second. Excess messa
 silently. Raise `RATE_LIMIT_BURST` if that is too strict.
 
 **`permission denied` on macOS/Linux**
-`chmod +x bin/gochat`.
+`chmod +x bin/blip`.
 
 ## Next steps
 

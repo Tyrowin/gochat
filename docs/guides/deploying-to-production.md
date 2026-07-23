@@ -1,6 +1,6 @@
 # Deploying to Production
 
-Run GoChat behind a TLS-terminating reverse proxy, supervised by systemd or Docker.
+Run Blip behind a TLS-terminating reverse proxy, supervised by systemd or Docker.
 
 Docker specifics live in [Running with Docker](running-with-docker.md); this guide covers the proxy,
 TLS, process supervision, and host tuning that apply either way.
@@ -8,10 +8,10 @@ TLS, process supervision, and host tuning that apply either way.
 ## Target shape
 
 ```
-Internet ──TLS──► Nginx or Caddy ──HTTP──► GoChat (127.0.0.1:8080)
+Internet ──TLS──► Nginx or Caddy ──HTTP──► Blip (127.0.0.1:8080)
 ```
 
-The proxy terminates TLS, and GoChat binds to loopback only. GoChat itself speaks no TLS and has no
+The proxy terminates TLS, and Blip binds to loopback only. Blip itself speaks no TLS and has no
 authentication, so it must never be the public listener.
 
 ## Checklist
@@ -42,10 +42,10 @@ does not cover `https://www.example.com`. See the
 
 ## Nginx
 
-`/etc/nginx/sites-available/gochat`:
+`/etc/nginx/sites-available/blip`:
 
 ```nginx
-upstream gochat_backend {
+upstream blip_backend {
     server 127.0.0.1:8080;
 }
 
@@ -65,7 +65,7 @@ server {
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
     location /ws {
-        proxy_pass http://gochat_backend;
+        proxy_pass http://blip_backend;
         proxy_http_version 1.1;
 
         # Required for the upgrade to succeed
@@ -88,14 +88,14 @@ server {
     location /test { return 404; }
 
     location / {
-        proxy_pass http://gochat_backend;
+        proxy_pass http://blip_backend;
         proxy_set_header Host            $host;
         proxy_set_header X-Real-IP       $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
-    access_log /var/log/nginx/gochat-access.log;
-    error_log  /var/log/nginx/gochat-error.log;
+    access_log /var/log/nginx/blip-access.log;
+    error_log  /var/log/nginx/blip-error.log;
 }
 
 server {
@@ -106,11 +106,11 @@ server {
 ```
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/gochat /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/blip /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-The `Origin` header must survive the hop — GoChat rejects handshakes without it. Nginx forwards it
+The `Origin` header must survive the hop — Blip rejects handshakes without it. Nginx forwards it
 by default; the explicit `proxy_set_header Origin $http_origin` guards against a global config that
 strips it.
 
@@ -132,7 +132,7 @@ chat.example.com {
     reverse_proxy localhost:8080
 
     log {
-        output file /var/log/caddy/gochat.log
+        output file /var/log/caddy/blip.log
         format json
     }
 }
@@ -155,26 +155,26 @@ HTTPS page.
 
 ## systemd
 
-`/etc/systemd/system/gochat.service`:
+`/etc/systemd/system/blip.service`:
 
 ```ini
 [Unit]
-Description=GoChat WebSocket Server
-Documentation=https://github.com/maltemindedal/gochat
+Description=Blip WebSocket Server
+Documentation=https://github.com/maltemindedal/blip
 After=network.target
 
 [Service]
 Type=simple
-User=gochat
-Group=gochat
-WorkingDirectory=/opt/gochat
-ExecStart=/opt/gochat/bin/gochat
+User=blip
+Group=blip
+WorkingDirectory=/opt/blip
+ExecStart=/opt/blip/bin/blip
 Restart=always
 RestartSec=10
 
 Environment=SERVER_PORT=127.0.0.1:8080
 Environment=ALLOWED_ORIGINS=https://chat.example.com
-# or: EnvironmentFile=/etc/gochat/gochat.env
+# or: EnvironmentFile=/etc/blip/blip.env
 
 # Shutdown drains HTTP then the hub, up to 30s total
 TimeoutStopSec=45
@@ -183,26 +183,26 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/gochat
+ReadWritePaths=/opt/blip
 LimitNOFILE=65536
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=gochat
+SyslogIdentifier=blip
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
-sudo useradd -r -s /bin/false gochat
-sudo mkdir -p /opt/gochat/bin
-sudo cp bin/linux/gochat-amd64 /opt/gochat/bin/gochat
-sudo chown -R gochat:gochat /opt/gochat
+sudo useradd -r -s /bin/false blip
+sudo mkdir -p /opt/blip/bin
+sudo cp bin/linux/blip-amd64 /opt/blip/bin/blip
+sudo chown -R blip:blip /opt/blip
 
-sudo systemctl enable --now gochat
-sudo systemctl status gochat
-sudo journalctl -u gochat -f
+sudo systemctl enable --now blip
+sudo systemctl status blip
+sudo journalctl -u blip -f
 ```
 
 systemd sends `SIGTERM` on stop, which triggers the graceful shutdown path: stop accepting
@@ -223,7 +223,7 @@ Binding to `127.0.0.1:8080` already prevents external access; the deny rule is d
 
 ## Health checks and monitoring
 
-`GET /` returns `200` with `GoChat server is running!` and is what the Docker and Compose health
+`GET /` returns `200` with `Blip server is running!` and is what the Docker and Compose health
 checks poll:
 
 ```bash
@@ -259,8 +259,8 @@ Vertical scaling is the simple path — raise `LimitNOFILE` and the kernel limit
 
 ```
 # /etc/security/limits.conf
-gochat soft nofile 65536
-gochat hard nofile 65536
+blip soft nofile 65536
+blip hard nofile 65536
 ```
 
 ```

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/maltemindedal/gochat/internal/server"
+	"github.com/maltemindedal/blip/internal/server"
 )
 
 const (

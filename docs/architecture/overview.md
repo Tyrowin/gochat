@@ -1,6 +1,6 @@
 # Architecture Overview
 
-GoChat is a single-process, in-memory WebSocket broadcast server: one binary, one dependency
+Blip is a single-process, in-memory WebSocket broadcast server: one binary, one dependency
 (`gorilla/websocket`), no database, no message history, no authentication. Everything below explains
 how the pieces fit and why they are shaped that way.
 
@@ -11,7 +11,7 @@ flowchart LR
     B[Browser / client app] -- wss:// --> P[Reverse proxy<br/>TLS termination]
     P -- ws:// --> S
 
-    subgraph S[GoChat process]
+    subgraph S[Blip process]
         H[HTTP server<br/>ServeMux]
         HUB[Hub<br/>single goroutine]
         C1[Client A<br/>read + write pump]

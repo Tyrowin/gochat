@@ -1,4 +1,4 @@
-// Package testhelpers provides common utilities and helper functions for testing the GoChat server.
+// Package testhelpers provides common utilities and helper functions for testing the Blip server.
 //
 // This package contains reusable test utilities that are shared across unit and integration tests.
 // It provides functions for creating test servers, making HTTP requests, and asserting response
@@ -66,7 +66,7 @@ func AssertContentType(t *testing.T, resp *http.Response, expected string) {
 func CreateHealthHandler() http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		if _, err := w.Write([]byte("GoChat server is running!")); err != nil {
+		if _, err := w.Write([]byte("Blip server is running!")); err != nil {
 			// In a real application, you might want to log this error
 			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		}

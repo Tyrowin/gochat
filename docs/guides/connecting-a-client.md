@@ -1,6 +1,6 @@
 # Connecting a Client
 
-How to talk to GoChat from your own code. For the exact wire contract, see the
+How to talk to Blip from your own code. For the exact wire contract, see the
 [API reference](../reference/api.md).
 
 Two rules cover most first-time failures:

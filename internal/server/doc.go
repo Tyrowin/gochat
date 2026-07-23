@@ -1,4 +1,4 @@
-// Package server implements the core HTTP and WebSocket server functionality for GoChat.
+// Package server implements the core HTTP and WebSocket server functionality for Blip.
 //
 // The implementation is organized into specialized files for configuration, hub
 // management, clients, routing, and HTTP handlers to keep the codebase
