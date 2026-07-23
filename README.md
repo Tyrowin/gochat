@@ -1,149 +1,113 @@
 # GoChat
 
+A small WebSocket broadcast server in Go — one binary, one dependency, no database.
+
 [![CI Pipeline](https://github.com/maltemindedal/gochat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/maltemindedal/gochat/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/maltemindedal/gochat)](https://golang.org/)
 
-A high-performance, production-ready WebSocket chat server built with Go. GoChat provides real-time multi-client communication with built-in security features, comprehensive testing, and cross-platform support.
+Clients connect to `/ws`, send JSON messages, and every other connected client receives them. That
+is the whole feature set: no rooms, no history, no accounts. What it does bring is the operational
+surface you would otherwise write yourself — origin validation against CSWSH, per-connection rate
+limiting, message size caps, graceful shutdown, and a static cross-platform binary. Use it as a
+real-time relay behind your own application, or as a starting point to build on.
 
-## Features
+## Quick start
 
-- **Real-time Communication** - WebSocket-based instant messaging
-- **Multi-client Support** - Handle thousands of concurrent connections
-- **Built-in Security** - Origin validation, rate limiting, and message size limits
-- **Production Ready** - Comprehensive testing, CI/CD pipeline, and deployment guides
-- **Cross-platform** - Build and run on Windows, macOS, and Linux
-- **Zero Dependencies** - Statically linked binaries with no external runtime dependencies
-- **Docker Support** - Production-ready containerization with multi-stage builds
-- **Environment Configuration** - Easy configuration via environment variables
-- **Easy Deployment** - Simple binary or container deployment with reverse proxy support
-
-## Quick Start
-
-### Local Build
+Requires **Go 1.25.12 or later** (`go version`) and Git. GNU Make is optional.
 
 ```bash
-# Clone the repository
 git clone https://github.com/maltemindedal/gochat.git
 cd gochat
 
-# Build the server
-make build
+make build            # or: go build -o bin/gochat ./cmd/server
+./bin/gochat          # Windows: .\bin\gochat.exe
+```
 
-# Run the server
+```
+Starting GoChat server...
+2026/07/23 15:14:04 Hub started and ready to manage WebSocket connections
+2026/07/23 15:14:04 Server starting on port :8080
+2026/07/23 15:14:04 Server listening on :8080
+```
+
+Open <http://localhost:8080/test> in two browser tabs, click **Connect** in each, and type. Messages
+go to the other tab — senders do not receive their own messages.
+
+With Docker instead:
+
+```bash
+docker compose up -d --build
+```
+
+## Usage
+
+Send and receive JSON with a single `content` field. The `Origin` header must match the server's
+allow-list — browsers set it automatically, other clients must not forget it.
+
+```javascript
+const ws = new WebSocket("ws://localhost:8080/ws");
+
+ws.onopen = () => ws.send(JSON.stringify({ content: "Hello" }));
+ws.onmessage = (event) => console.log(JSON.parse(event.data).content);
+```
+
+Configuration is entirely environment variables:
+
+```bash
+SERVER_PORT=:8080 \
+ALLOWED_ORIGINS=http://localhost:8080,http://localhost:3000 \
+MAX_MESSAGE_SIZE=512 \
+RATE_LIMIT_BURST=5 \
 ./bin/gochat
 ```
 
-### Docker
-
-```bash
-# Using Docker Compose (recommended)
-docker-compose up -d
-
-# Or build and run manually
-docker build -t gochat:latest .
-docker run -d -p 8080:8080 --name gochat gochat:latest
-```
-
-### Configuration
-
-GoChat can be configured using environment variables. Copy `.env.example` to `.env` and customize:
-
-```bash
-cp .env.example .env
-# Edit .env with your settings
-```
-
-The server starts on `http://localhost:8080`. Visit `http://localhost:8080/test` to try the interactive test page.
-
 ## Documentation
 
-### Getting Started
+Full index: [docs/README.md](docs/README.md).
 
-- **[Getting Started Guide](docs/GETTING_STARTED.md)** - Installation, building, and running the server
-- **[API Documentation](docs/API.md)** - WebSocket API reference and code examples
+| Guide                                                             | Contents                                     |
+| ----------------------------------------------------------------- | -------------------------------------------- |
+| [Getting started](docs/getting-started.md)                        | Build, run, and try it in ~10 minutes         |
+| [Connecting a client](docs/guides/connecting-a-client.md)         | JavaScript, Go, Python, websocat examples     |
+| [Configuration](docs/reference/configuration.md)                  | Every environment variable and default        |
+| [API reference](docs/reference/api.md)                            | Endpoints, message protocol, failure modes    |
+| [Deploying to production](docs/guides/deploying-to-production.md) | TLS, reverse proxy, systemd, scaling limits   |
+| [Security hardening](docs/guides/security-hardening.md)           | What is protected, and what is not            |
+| [Architecture overview](docs/architecture/overview.md)            | Hub, client pumps, design trade-offs          |
 
-### Deployment
+## Endpoints
 
-- **[Deployment Guide](docs/DEPLOYMENT.md)** - Production deployment with Nginx/Caddy, TLS/WSS setup, and process management
-- **[Security Documentation](docs/SECURITY.md)** - Security features, configuration, and best practices
+| Endpoint | Purpose                                                          |
+| -------- | ---------------------------------------------------------------- |
+| `/ws`    | WebSocket endpoint. `GET` only; rejects disallowed origins with 403 |
+| `/`      | Health check returning `GoChat server is running!` (also the catch-all for unmatched paths) |
+| `/test`  | Built-in browser test page — development only                     |
 
-### Development
-
-- **[Development Guide](docs/DEVELOPMENT.md)** - Development setup, testing, and CI/CD
-- **[Building Guide](docs/BUILDING.md)** - Build instructions and cross-compilation
-- **[Contributing Guide](docs/CONTRIBUTING.md)** - How to contribute to the project
-
-## Architecture
-
-### Simple and Focused
-
-GoChat follows a clean, modular architecture:
+## Project structure
 
 ```
-Client (Browser/App)
-    ↓ WebSocket (ws:// or wss://)
-Reverse Proxy (Nginx/Caddy)
-    ↓ HTTP
-GoChat Server (Go)
-    ├── Hub (Message Broker)
-    ├── Clients (WebSocket Connections)
-    └── Security (Rate Limiting, Origin Validation)
+cmd/server/         Entry point: startup, signal handling, graceful shutdown
+internal/server/    Hub, client pumps, handlers, config, origin checks, rate limiter
+test/               Unit and integration suites plus shared helpers
+docs/               Documentation (see docs/README.md)
+.github/workflows/  CI pipeline
 ```
 
-### Key Components
+## Status
 
-- **Hub** - Central message broker coordinating all connected clients
-- **Client** - WebSocket connection handler with read/write pumps
-- **Rate Limiter** - Token bucket per-connection rate limiting
-- **Origin Validator** - CSWSH attack prevention
-- **Handlers** - HTTP/WebSocket request handlers
+Actively maintained, single-instance by design. The hub lives in process memory, so multiple
+instances behind a load balancer form separate chat rooms — see
+[scaling](docs/guides/deploying-to-production.md#scaling). There is no built-in authentication;
+enforce it in front of `/ws` if your data needs it.
 
-See [Development Guide](docs/DEVELOPMENT.md#project-structure) for detailed architecture information.
+Test coverage was 71.0% of statements as of 2026-07-23 (`make test-coverage`).
 
-## Technology Stack
+## Contributing
 
-- **Language:** Go 1.25.12+
-- **WebSocket Library:** [gorilla/websocket](https://github.com/gorilla/websocket)
-- **Testing:** Go standard library + custom test helpers
-- **CI/CD:** GitHub Actions
-- **Code Quality:** golangci-lint, gosec, govulncheck
-
-## Project Status
-
-GoChat is actively maintained and production-ready. We welcome contributions!
-
-- **Stability:** Stable, used in production
-- **Test Coverage:** 80%+ with unit and integration tests
-- **Security:** Regular dependency scanning and security audits
-- **Performance:** Handles thousands of concurrent connections
-
-## Use Cases
-
-- **Chat Applications** - Real-time messaging systems
-- **Live Notifications** - Push notifications to web clients
-- **Collaborative Tools** - Real-time collaboration features
-- **Gaming** - Multiplayer game communication
-- **IoT** - Device-to-server real-time communication
-- **Monitoring Dashboards** - Live data updates
-
-## Community and Support
-
-- **Issues:** [GitHub Issues](https://github.com/maltemindedal/gochat/issues) - Bug reports and feature requests
-- **Discussions:** [GitHub Discussions](https://github.com/maltemindedal/gochat/discussions) - Questions and community chat
-- **Contributing:** See [Contributing Guide](docs/CONTRIBUTING.md)
-- **Security:** See [Security Policy](docs/SECURITY.md#reporting-security-issues)
+Bug reports, features, and pull requests are welcome — see
+[docs/contributing.md](docs/contributing.md).
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Built with [gorilla/websocket](https://github.com/gorilla/websocket)
-- Inspired by the Go community's best practices
-- Thanks to all contributors
-
----
-
-**Ready to get started?** Check out the [Getting Started Guide](docs/GETTING_STARTED.md) or explore the [API Documentation](docs/API.md) to integrate GoChat into your application.
+MIT — see [LICENSE](LICENSE).

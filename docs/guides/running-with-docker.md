@@ -1,0 +1,114 @@
+# Running with Docker
+
+The repository ships a multi-stage [`Dockerfile`](../../Dockerfile) and a
+[`docker-compose.yml`](../../docker-compose.yml) for local use.
+
+## Compose (quickest path)
+
+```bash
+docker compose up -d --build
+docker compose logs -f gochat
+```
+
+This builds the image, publishes port 8080, and applies the environment block in
+`docker-compose.yml` — the defaults plus `http://localhost:3000` as a second allowed origin. Visit
+<http://localhost:8080/test> to confirm.
+
+Stop and remove it:
+
+```bash
+docker compose down
+```
+
+### Using a .env file instead
+
+`docker-compose.yml` has a commented `env_file` block. Uncomment it and drop the inline
+`environment:` list to configure the container from `.env`:
+
+```yaml
+    # environment:      # remove or comment out
+    env_file:
+      - .env
+```
+
+```bash
+cp .env.example .env
+# edit .env
+docker compose up -d
+```
+
+The Go process never reads `.env` on its own — only Compose (or `docker run --env-file`) does.
+
+## Plain Docker
+
+```bash
+docker build -t gochat:latest .
+
+docker run -d \
+  --name gochat \
+  -p 8080:8080 \
+  -e ALLOWED_ORIGINS="https://chat.example.com" \
+  -e MAX_MESSAGE_SIZE=1024 \
+  -e RATE_LIMIT_BURST=10 \
+  --restart unless-stopped \
+  gochat:latest
+```
+
+`make docker-build` and `make docker-run` wrap the same commands, tagging the image with the
+Makefile's `VERSION` variable (`dev` unless you override it).
+
+Keep `SERVER_PORT` at its default inside the container. The image's `HEALTHCHECK` and the Compose
+health check both probe `http://localhost:8080/`, so changing the internal port breaks them — remap
+on the host side with `-p 9090:8080` instead.
+
+## What the image contains
+
+**Build stage** — `golang:1.25.12-alpine`, compiles with `CGO_ENABLED=0 -trimpath -ldflags="-s -w"`
+for a static, stripped binary.
+
+**Runtime stage** — `alpine:3.20` with `ca-certificates` and `tzdata`, running as the non-root user
+`gochat` (UID 1000). Entry point is `/app/gochat`. The health check runs `wget --spider` against `/`
+every 30 seconds after a 5-second grace period.
+
+The Go version is pinned in the Dockerfile and must be bumped together with `go.mod`,
+`.github/workflows/ci.yml`, and the README when the toolchain moves.
+
+## Behind a reverse proxy
+
+Do not publish 8080 to the internet. Expose it only to the proxy:
+
+```yaml
+services:
+  gochat:
+    build: .
+    expose:
+      - "8080"          # container network only, no host port
+    environment:
+      - ALLOWED_ORIGINS=https://chat.example.com
+    networks:
+      - web
+
+networks:
+  web:
+    external: true
+```
+
+Proxy configuration — including the WebSocket upgrade headers and long timeouts that `/ws` needs —
+is in [Deploying to production](deploying-to-production.md).
+
+## Operations
+
+```bash
+docker compose restart gochat
+docker inspect --format='{{.State.Health.Status}}' gochat-server
+docker exec -it gochat-server /bin/sh
+```
+
+The container writes plain-text logs to stdout with no log levels, so ship them straight to your log
+collector via the Docker logging driver.
+
+## Related
+
+- [Configuration reference](../reference/configuration.md) — every environment variable
+- [Deploying to production](deploying-to-production.md) — TLS, proxying, systemd
+- [Security hardening](security-hardening.md) — what to lock down before exposing the server
