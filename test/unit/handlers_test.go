@@ -87,6 +87,8 @@ func TestHTTPMethodsUnit(t *testing.T) {
 
 // testHTTPMethod tests a single HTTP method against the handler
 func testHTTPMethod(t *testing.T, handler http.HandlerFunc, method string) {
+	t.Helper()
+
 	req, err := http.NewRequest(method, "/", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +126,7 @@ func TestSetupRoutes(t *testing.T) {
 	}
 
 	// Test that the root route is properly configured
-	req, err := http.NewRequest("GET", "/", http.NoBody)
+	req, err := http.NewRequest(http.MethodGet, "/", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

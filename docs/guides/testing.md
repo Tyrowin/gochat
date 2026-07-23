@@ -94,14 +94,24 @@ Follow the conventions already in the suite:
   and leaving it changed.
 - Prefer waiting on a channel or polling with a deadline over `time.Sleep` for synchronization.
 
-There are currently no benchmarks. `make bench` runs `go test -bench=. -benchmem ./...` and will pick
-them up if you add any.
+### Benchmarks
+
+`make bench` runs `go test -bench=. -benchmem ./...`. The benchmarks live alongside the code they
+measure, in `internal/server/*_internal_test.go`, because they exercise unexported hot paths:
+broadcast fan-out, message normalization, the rate limiter, and origin checks.
+
+They assert allocation counts implicitly rather than wall-clock time — the numbers move with the
+machine, but a path that was allocation-free and stops being so is a regression worth catching. Run
+`go test -bench . -benchmem ./internal/...` before and after a change to the hot path and compare
+the `allocs/op` column.
 
 ## In CI
 
-The `build-and-test` job runs `go test -v -race -coverprofile=coverage.out ./...` on Ubuntu with the
-pinned Go version, and the `build-matrix` job re-runs `go test -v ./...` (no race detector) against
-Go 1.24.x and 1.25.x. See [Contributing](../contributing.md#continuous-integration).
+The `test` job runs `go test -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...`
+on Ubuntu with the toolchain from `go.mod`. `-shuffle=on` randomizes test order, so a suite that
+depends on ordering fails in CI even when it passes locally. A separate `bench` job runs every
+benchmark once (`-benchtime=10x`) to keep them compiling. See
+[Contributing](../contributing.md#continuous-integration).
 
 ## Related
 

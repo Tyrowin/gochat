@@ -3,13 +3,19 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
-	"io"
-	"log"
 	"time"
 
 	"github.com/gorilla/websocket"
+)
+
+// Connection timing parameters. pingPeriod must stay below pongWait so a peer
+// has time to answer before its read deadline expires.
+const (
+	pongWait     = 60 * time.Second
+	pingPeriod   = (pongWait * 9) / 10
+	writeWait    = 10 * time.Second
+	sendBufferSz = 256
 )
 
 // Client represents a WebSocket client connection in the chat system.
@@ -20,9 +26,8 @@ type Client struct {
 	send           chan []byte
 	hub            *Hub
 	addr           string
-	closed         bool
 	maxMessageSize int64
-	rateLimiter    *rateLimiter
+	rateLimiter    rateLimiter
 	rateLimit      RateLimitConfig
 }
 
@@ -30,20 +35,18 @@ type Client struct {
 // hub reference, and client address. The client's send channel is buffered
 // to handle message queuing.
 func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
-	cfg := currentConfig()
+	cfg := currentSnapshot().cfg
 	if conn != nil {
 		conn.SetReadLimit(cfg.MaxMessageSize)
 	}
-	limiter := newRateLimiter(cfg.RateLimit.Burst, cfg.RateLimit.RefillInterval)
 
 	return &Client{
 		conn:           conn,
-		send:           make(chan []byte, 256),
+		send:           make(chan []byte, sendBufferSz),
 		hub:            hub,
 		addr:           addr,
-		closed:         false,
 		maxMessageSize: cfg.MaxMessageSize,
-		rateLimiter:    limiter,
+		rateLimiter:    newRateLimiter(cfg.RateLimit.Burst, cfg.RateLimit.RefillInterval),
 		rateLimit:      cfg.RateLimit,
 	}
 }
@@ -54,129 +57,104 @@ func (c *Client) GetSendChan() <-chan []byte {
 	return c.send
 }
 
-// setupReadConnection configures read deadlines and pong handler for the WebSocket connection
+// setupReadConnection configures read deadlines and the pong handler for the
+// WebSocket connection.
 func (c *Client) setupReadConnection() {
 	if c.conn == nil {
 		return
 	}
-	if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		log.Printf("Error setting initial read deadline for %s: %v", c.addr, err)
+
+	if err := c.conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log().Warn("failed to set initial read deadline", "addr", c.addr, "error", err)
 	}
+
 	c.conn.SetPongHandler(func(string) error {
-		if err := c.conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-			log.Printf("Error setting read deadline in pong handler for %s: %v", c.addr, err)
-		}
-		return nil
+		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 }
 
-// handleReadError logs appropriate error messages based on the error type
-// and returns true if the read loop should break
+// handleReadError logs the error at an appropriate level and always reports
+// that the read loop should stop, since every read error is terminal.
 func (c *Client) handleReadError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// Check for rate limit violations
-	if errors.Is(err, websocket.ErrReadLimit) {
-		log.Printf("Message from %s exceeded maximum size of %d bytes", c.addr, c.maxMessageSize)
-		return true
-	}
+	switch {
+	case errors.Is(err, websocket.ErrReadLimit):
+		log().Warn("message exceeded maximum size",
+			"addr", c.addr, "max_bytes", c.maxMessageSize)
 
-	// Check for expected close scenarios
-	if websocket.IsCloseError(err,
+	case websocket.IsCloseError(err,
 		websocket.CloseNormalClosure,
 		websocket.CloseGoingAway,
-		websocket.CloseAbnormalClosure) {
-		log.Printf("Client %s disconnected: %v", c.addr, err)
-		return true
+		websocket.CloseAbnormalClosure),
+		isExpectedCloseError(err):
+		log().Debug("client disconnected", "addr", c.addr, "error", err)
+
+	default:
+		log().Warn("websocket read error", "addr", c.addr, "error", err)
 	}
 
-	// Check for network errors
-	if errors.Is(err, io.EOF) || isExpectedCloseError(err) {
-		log.Printf("Client %s connection closed: %v", c.addr, err)
-		return true
-	}
-
-	// Log unexpected errors with more context
-	if websocket.IsUnexpectedCloseError(err,
-		websocket.CloseGoingAway,
-		websocket.CloseAbnormalClosure,
-		websocket.CloseMessageTooBig) {
-		log.Printf("Unexpected WebSocket error from %s: %v", c.addr, err)
-		return true
-	}
-
-	// Generic error case
-	log.Printf("WebSocket read error from %s: %v", c.addr, err)
 	return true
 }
 
-// checkRateLimit verifies if the client has exceeded rate limits
-// and returns true if the message should be processed
+// checkRateLimit reports whether the client is within its message budget.
 func (c *Client) checkRateLimit() bool {
-	if c.rateLimiter != nil && !c.rateLimiter.allow() {
-		log.Printf("Rate limit exceeded for %s (%d messages per %s); discarding message", c.addr, c.rateLimit.Burst, c.rateLimit.RefillInterval)
-		return false
+	if c.rateLimiter.allow() {
+		return true
 	}
-	return true
+
+	log().Warn("rate limit exceeded; discarding message",
+		"addr", c.addr,
+		"burst", c.rateLimit.Burst,
+		"interval", c.rateLimit.RefillInterval)
+	return false
 }
 
-// processMessage unmarshals, normalizes, and broadcasts a raw message
-// and returns true if the message was processed successfully
+// processMessage normalizes a raw frame and hands it to the hub for broadcast.
 func (c *Client) processMessage(rawMessage []byte) bool {
-	var msg Message
-	if err := json.Unmarshal(rawMessage, &msg); err != nil {
-		log.Printf("Invalid message from %s: %v", c.addr, err)
-		return false
-	}
-
-	normalizedMessage, err := json.Marshal(msg)
+	payload, err := normalizeMessage(rawMessage)
 	if err != nil {
-		log.Printf("Error normalizing message from %s: %v", c.addr, err)
+		log().Warn("invalid message", "addr", c.addr, "error", err)
 		return false
 	}
 
-	log.Printf("Received message from %s: %s", c.addr, string(normalizedMessage))
+	if debugEnabled() {
+		log().Debug("received message", "addr", c.addr, "payload", string(payload))
+	}
 
 	select {
-	case c.hub.broadcast <- BroadcastMessage{Sender: c, Payload: normalizedMessage}:
+	case c.hub.broadcast <- BroadcastMessage{Sender: c, Payload: payload}:
+		return true
 	case <-c.hub.shutdown:
-		log.Printf("Skipping broadcast from %s because the hub is shutting down", c.addr)
+		log().Debug("skipping broadcast; hub is shutting down", "addr", c.addr)
 		return false
 	}
-
-	return true
 }
 
-// cleanupReadPump handles cleanup tasks when readPump exits
+// cleanupReadPump handles cleanup tasks when readPump exits.
 func (c *Client) cleanupReadPump() {
 	select {
 	case c.hub.unregister <- c:
 	case <-c.hub.shutdown:
 	}
 
-	if c.conn != nil {
-		if err := c.conn.Close(); err != nil {
-			if !isExpectedCloseError(err) {
-				log.Printf("Error closing connection in readPump: %v", err)
-			}
-		}
-	}
+	c.closeConnection()
 }
 
-// handleReadMessage processes a single message read from the WebSocket
+// handleReadMessage processes a single message read from the WebSocket and
+// reports whether the read loop should stop.
 func (c *Client) handleReadMessage() bool {
 	_, rawMessage, err := c.conn.ReadMessage()
 	if err != nil {
 		return c.handleReadError(err)
 	}
 
-	if !c.checkRateLimit() {
-		return false
+	if c.checkRateLimit() {
+		c.processMessage(rawMessage)
 	}
 
-	c.processMessage(rawMessage)
 	return false
 }
 
@@ -194,7 +172,7 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) writePump() {
-	ticker := time.NewTicker(54 * time.Second)
+	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
 		c.closeConnection()
@@ -217,26 +195,26 @@ func (c *Client) processWriteEvent(ticker *time.Ticker) bool {
 	}
 }
 
-// closeConnection safely closes the WebSocket connection with proper error handling
+// closeConnection safely closes the WebSocket connection with proper error handling.
 func (c *Client) closeConnection() {
 	if c.conn == nil {
 		return
 	}
-	if err := c.conn.Close(); err != nil {
-		// Only log unexpected connection close errors
-		if !isExpectedCloseError(err) {
-			log.Printf("Error closing connection in writePump: %v", err)
-		}
+
+	if err := c.conn.Close(); err != nil && !isExpectedCloseError(err) {
+		log().Debug("error closing connection", "addr", c.addr, "error", err)
 	}
 }
 
-// handleMessage processes outgoing messages and returns false if the connection should be closed
+// handleMessage processes outgoing messages and returns false if the connection
+// should be closed.
 func (c *Client) handleMessage(message []byte, ok bool) bool {
 	if c.conn == nil {
 		return false
 	}
-	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		log.Printf("Error setting write deadline for %s: %v", c.addr, err)
+
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		log().Debug("error setting write deadline", "addr", c.addr, "error", err)
 		return false
 	}
 
@@ -247,103 +225,75 @@ func (c *Client) handleMessage(message []byte, ok bool) bool {
 	return c.writeTextMessage(message)
 }
 
-// writeCloseMessage sends a close message to the client
+// writeCloseMessage sends a close frame to the client.
 func (c *Client) writeCloseMessage() bool {
-	if c.conn == nil {
-		return false
+	if err := c.conn.WriteMessage(websocket.CloseMessage, nil); err != nil && !isExpectedCloseError(err) {
+		log().Debug("error writing close message", "addr", c.addr, "error", err)
 	}
-	if err := c.conn.WriteMessage(websocket.CloseMessage, []byte{}); err != nil {
-		if !isExpectedCloseError(err) {
-			log.Printf("Error writing close message to %s: %v", c.addr, err)
-		}
-	}
+
 	return false
 }
 
-// writeTextMessage writes a text message and any queued messages
+// writeTextMessage writes a text message, coalescing any frames already queued
+// on the send channel into the same WebSocket frame to amortize syscalls.
 func (c *Client) writeTextMessage(message []byte) bool {
-	if c.conn == nil {
-		return false
-	}
 	w, err := c.conn.NextWriter(websocket.TextMessage)
 	if err != nil {
-		log.Printf("Error creating writer for %s: %v", c.addr, err)
+		log().Debug("error creating writer", "addr", c.addr, "error", err)
 		return false
 	}
 
-	if !c.writeMessageContent(w, message) {
+	if _, err = w.Write(message); err != nil {
+		log().Debug("error writing message", "addr", c.addr, "error", err)
+		_ = w.Close()
 		return false
 	}
 
-	if !c.writeQueuedMessages(w) {
-		return false
-	}
+	for range len(c.send) {
+		queued, ok := <-c.send
+		if !ok {
+			_ = w.Close()
+			return false
+		}
 
-	return c.closeWriter(w)
-}
+		if _, err = w.Write([]byte{'\n'}); err != nil {
+			log().Debug("error writing separator", "addr", c.addr, "error", err)
+			_ = w.Close()
+			return false
+		}
 
-// writeMessageContent writes the main message content
-func (c *Client) writeMessageContent(w io.WriteCloser, message []byte) bool {
-	if _, err := w.Write(message); err != nil {
-		log.Printf("Error writing message to %s: %v", c.addr, err)
-		return false
-	}
-	return true
-}
-
-// writeQueuedMessages writes any additional queued messages
-func (c *Client) writeQueuedMessages(w io.WriteCloser) bool {
-	n := len(c.send)
-	for i := 0; i < n; i++ {
-		if !c.writeQueuedMessage(w) {
+		if _, err = w.Write(queued); err != nil {
+			log().Debug("error writing queued message", "addr", c.addr, "error", err)
+			_ = w.Close()
 			return false
 		}
 	}
+
+	if err = w.Close(); err != nil {
+		log().Debug("error closing writer", "addr", c.addr, "error", err)
+		return false
+	}
+
 	return true
 }
 
-// writeQueuedMessage writes a single queued message with newline separator
-func (c *Client) writeQueuedMessage(w io.WriteCloser) bool {
-	if _, err := w.Write([]byte{'\n'}); err != nil {
-		log.Printf("Error writing newline to %s: %v", c.addr, err)
-		return false
-	}
-
-	queuedMessage, ok := <-c.send
-	if !ok {
-		return false
-	}
-
-	if _, err := w.Write(queuedMessage); err != nil {
-		log.Printf("Error writing queued message to %s: %v", c.addr, err)
-		return false
-	}
-	return true
-}
-
-// closeWriter closes the message writer
-func (c *Client) closeWriter(w io.WriteCloser) bool {
-	if err := w.Close(); err != nil {
-		log.Printf("Error closing writer for %s: %v", c.addr, err)
-		return false
-	}
-	return true
-}
-
-// handlePing sends a ping message to keep the connection alive
+// handlePing sends a ping frame to keep the connection alive.
 func (c *Client) handlePing() bool {
 	if c.conn == nil {
 		return false
 	}
-	if err := c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		log.Printf("Error setting write deadline for ping to %s: %v", c.addr, err)
+
+	if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		log().Debug("error setting ping write deadline", "addr", c.addr, "error", err)
 		return false
 	}
+
 	if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 		if !isExpectedCloseError(err) {
-			log.Printf("Error writing ping message to %s: %v", c.addr, err)
+			log().Debug("error writing ping", "addr", c.addr, "error", err)
 		}
 		return false
 	}
+
 	return true
 }

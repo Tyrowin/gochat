@@ -4,8 +4,8 @@ Build GoChat, run it, and watch two browser tabs chat with each other. About 10 
 
 ## Prerequisites
 
-- **Go 1.25.12 or later** — check with `go version`. Older 1.24/1.25 toolchains work too; Go
-  downloads the version named in `go.mod` automatically.
+- **Go 1.26.5 or later** — check with `go version`. An older toolchain works too; Go downloads the
+  version named in `go.mod` automatically.
 - **Git**
 - **GNU Make** (optional — every step below also shows the plain `go` command)
   - Windows: `choco install make`
@@ -47,11 +47,13 @@ Or `make run`, which rebuilds first.
 Expected output:
 
 ```
-Starting GoChat server...
-2026/07/23 15:14:04 Hub started and ready to manage WebSocket connections
-2026/07/23 15:14:04 Server starting on port :8080
-2026/07/23 15:14:04 Server listening on :8080
+time=2026-07-23T15:14:04.081+02:00 level=INFO msg="starting GoChat server" version=dev commit=unknown build_time=unknown
+time=2026-07-23T15:14:04.081+02:00 level=INFO msg="hub started and ready to manage WebSocket connections"
+time=2026-07-23T15:14:04.082+02:00 level=INFO msg="server listening" addr=:8080
 ```
+
+Logs go to stderr as `log/slog` key-value records. Set `LOG_LEVEL=debug` to see every message the
+server relays.
 
 The server is now on <http://localhost:8080>. Confirm it in another terminal:
 

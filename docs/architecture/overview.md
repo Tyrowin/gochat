@@ -31,15 +31,17 @@ See [Deploying to production](../guides/deploying-to-production.md).
 ```
 cmd/server/main.go          Entry point: config → hub → routes → HTTP server → signal handling
 internal/server/
-  config.go                 Env parsing, defaults, sanitization, the global config store
+  config.go                 Env parsing, defaults, sanitization, the atomic config snapshot
+  logging.go                Structured log/slog logger and LOG_LEVEL handling
   routes.go                 ServeMux wiring for /, /ws, /test
   handlers.go               Upgrade handler, health handler, embedded test page
+  testpage.html             The /test page, compiled into the binary with go:embed
   http_server.go            http.Server construction, start/stop, global hub accessor
   hub.go                    Client registry, broadcast fan-out, shutdown coordination
   client.go                 Per-connection read and write pumps
   origin.go                 Origin normalization and allow-list checks
   rate_limiter.go           Per-connection token bucket
-  types.go                  Message and BroadcastMessage payloads
+  types.go                  Message payloads and the JSON normalizer
 test/                       Unit and integration suites (see guides/testing.md)
 ```
 
@@ -50,32 +52,45 @@ package comment on each file describes that file's slice of responsibility.
 ## Components
 
 **Hub** (`hub.go`) — owns the set of connected clients. A single goroutine runs `Hub.Run`, selecting
-over four channels: `register`, `unregister`, `broadcast`, and `shutdown`. Because one goroutine
-owns the registry mutations, the concurrency story stays simple; a `sync.RWMutex` additionally guards
-the client map so broadcasts can take a snapshot without blocking the loop.
+over four channels: `register`, `unregister`, `broadcast`, and `shutdown`.
+
+That goroutine is the *sole* owner of the client map: registration, unregistration, fan-out, and
+shutdown all happen inside `Run`, so the map needs no lock at all. Broadcasts iterate the map
+directly instead of copying it, and the slice of failed clients is scratch space reused across
+messages, which makes the fan-out path allocation-free. The rule that keeps this sound is simple:
+every mutation of the client set must arrive through one of the hub's channels.
 
 **Client** (`client.go`) — one per connection, with two goroutines:
 
-- *read pump* — reads frames, enforces the rate limit, decodes and re-encodes the payload, and hands
-  it to the hub's broadcast channel. Exits on any read error and unregisters the client.
+- *read pump* — reads frames, enforces the rate limit, normalizes the payload, and hands it to
+  the hub's broadcast channel. Exits on any read error and unregisters the client.
 - *write pump* — selects over the client's 256-message `send` channel, a 54-second ping ticker, and
   the hub's shutdown channel. Coalesces anything already queued into the current frame, separated by
-  newlines.
+  newlines, so a burst costs one frame rather than one per message.
 
 Splitting reads and writes is required by `gorilla/websocket`: at most one concurrent reader and one
 concurrent writer are allowed per connection.
 
-**Rate limiter** (`rate_limiter.go`) — a mutex-protected token bucket per connection. Tokens refill
-continuously from elapsed time rather than on a timer, so there is no background goroutine per
-client.
+**Rate limiter** (`rate_limiter.go`) — a token bucket per connection, embedded in the `Client` by
+value. Tokens refill continuously from elapsed time rather than on a timer, so there is no background
+goroutine and no allocation per client. It carries no mutex because only that connection's read pump
+ever touches it; sharing a limiter across goroutines would be a bug.
 
 **Origin validation** (`origin.go`) — normalizes the `Origin` header to lowercase `scheme://host` and
 looks it up in a set built once at startup. Wired into the upgrader as `CheckOrigin`, so rejection
-happens before any connection resources are allocated.
+happens before any connection resources are allocated. Headers that are already canonical — which is
+what browsers send — match the set directly and skip URL parsing entirely. A request with no `Origin`
+header is always rejected, even when the allow-list contains `*`.
 
-**Config** (`config.go`) — parsed from the environment at startup into a package-level `activeConfig`
-behind an `RWMutex`. `SetConfig(nil)` restores defaults, which is what the tests use. Invalid values
-never abort startup; they log and fall back.
+**Config** (`config.go`) — parsed from the environment at startup, sanitized, and published as an
+immutable snapshot in an `atomic.Pointer`. Readers on the connection path load the pointer without
+locking; `SetConfig` swaps in a whole new snapshot rather than mutating the live one. `SetConfig(nil)`
+restores defaults, which is what the tests use. Invalid values never abort startup; they log and fall
+back.
+
+**Logging** (`logging.go`) — a single `log/slog` logger shared by the package, its level read from
+`LOG_LEVEL`. Per-message records are emitted at debug level and guarded by a cached level check, so
+at the default `info` level a busy server does no logging work per message.
 
 ## Message flow
 
@@ -89,9 +104,9 @@ sequenceDiagram
 
     A->>RA: {"content":"hi"}
     RA->>RA: rate limit check
-    RA->>RA: unmarshal → re-marshal
+    RA->>RA: normalize payload
     RA->>H: BroadcastMessage{Sender: A, Payload}
-    H->>H: snapshot clients, skip sender
+    H->>H: iterate clients, skip sender
     H->>WB: send channel
     WB->>B: text frame
 ```
@@ -100,13 +115,16 @@ Two consequences fall out of this design:
 
 - **The sender never receives its own message.** `BroadcastMessage` carries the sender so the hub can
   skip it. Clients that want a local echo must add it themselves.
-- **Payloads are normalized.** Decoding into `Message` and re-encoding drops unknown fields, so
-  clients cannot smuggle extra data through, and a message missing `content` is relayed as
-  `{"content":""}`.
+- **Payloads are normalized.** Every frame is re-encoded into exactly `{"content":...}`, so unknown
+  fields are dropped, clients cannot smuggle extra data through, and a message missing `content` is
+  relayed as `{"content":""}`. A frame that already *is* in that canonical form — the common case —
+  is detected with a single scan and copied through without a JSON round trip. Anything else falls
+  back to decode-and-re-encode. Both paths produce byte-identical output, which is pinned by a
+  property test against `encoding/json`.
 
 ### Backpressure
 
-`safeSend` is a non-blocking send into the client's 256-slot buffer. If the buffer is full, the
+Fan-out is a non-blocking send into each client's 256-slot buffer. If the buffer is full, the
 client is dropped rather than allowed to stall the hub — one slow consumer cannot block the broadcast
 loop for everyone. The trade-off is that a client on a bad network loses its connection instead of
 its messages being queued indefinitely.
@@ -138,9 +156,32 @@ and the write pump — so nothing can block shutdown by waiting on a channel nob
 Roughly two goroutines and a 256-message buffer per connection. The whole suite runs under `-race`
 in CI because this is where the risk lives.
 
+## Performance
+
+The hot paths are the ones that run per message, and all three are allocation-free or close to it.
+Measured with `make bench` on an AMD Ryzen 7 7800X3D; treat the absolute numbers as machine-specific
+and the allocation counts as the durable part.
+
+| Path                                | Cost                    | Notes                                        |
+| ----------------------------------- | ----------------------- | -------------------------------------------- |
+| Broadcast fan-out, 1000 clients     | ~35 us, 0 allocs        | No lock, no per-message client snapshot       |
+| Message normalization, canonical    | ~46 ns, 1 alloc         | Scan and copy; no JSON round trip             |
+| Message normalization, slow path    | ~590 ns, 8 allocs       | `encoding/json` decode plus hand-rolled encode |
+| Rate limit check                    | ~6 ns, 0 allocs         | Lock-free token bucket                        |
+| Origin check, canonical header      | ~23 ns, 0 allocs        | Set lookup before any URL parsing             |
+
+The single remaining allocation per message is the normalized payload itself, which is shared by
+reference with every receiving client rather than copied per recipient. Write buffers are pooled
+across connections by `gorilla/websocket`, so memory per idle connection stays close to the 256-slot
+send channel.
+
+Two decisions do more for throughput than any of the micro-optimizations above: per-message logging
+only happens at debug level, and the write pump coalesces everything already queued into a single
+frame.
+
 ## Design trade-offs
 
-**Global hub and global config.** `GetHub()` and the package-level `activeConfig` are process-wide
+**Global hub and global config.** `GetHub()` and the package-level config snapshot are process-wide
 singletons. This keeps `main.go` to a hundred lines, at the cost of testability — the test suite
 works around it with `SetupRoutesWithHub` and `SetConfig`. Threading a `*Hub` and `*Config` through
 explicitly would be the natural refactor if the server ever grows a second hub (rooms, namespaces).
@@ -156,8 +197,9 @@ NATS) between the hubs.
 clients) fail fast instead of buffering. This bounds memory under load but makes message delivery
 best-effort, with no acknowledgement in the protocol.
 
-**Plain-text logging via `log`.** No levels, no structure, no request IDs. Fine for a single small
-service; the first thing to change if this ever runs at scale.
+**Structured logging without request IDs.** `log/slog` gives levels and key-value attributes, but
+there is no correlation ID tying a client's frames together across records. Adding one would mean
+threading a connection ID through the pumps.
 
 ## Related
 

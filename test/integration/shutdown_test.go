@@ -75,9 +75,11 @@ func setupShutdownTestServer(t *testing.T, port string) (*server.Hub, *http.Serv
 
 // connectTestClients creates multiple WebSocket clients without background readers
 func connectTestClients(t *testing.T, numClients int, url string) []*websocket.Conn {
+	t.Helper()
+
 	clients := make([]*websocket.Conn, numClients)
 
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		conn, err := testhelpers.ConnectWebSocket(url)
 		if err != nil {
 			t.Fatalf("Failed to connect client %d: %v", i, err)
@@ -91,6 +93,8 @@ func connectTestClients(t *testing.T, numClients int, url string) []*websocket.C
 
 // performGracefulShutdown initiates and waits for graceful shutdown to complete
 func performGracefulShutdown(t *testing.T, httpServer *http.Server, hub *server.Hub) {
+	t.Helper()
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -119,6 +123,8 @@ func performGracefulShutdown(t *testing.T, httpServer *http.Server, hub *server.
 
 // verifyClientsDisconnected checks that all client connections are closed
 func verifyClientsDisconnected(t *testing.T, clients []*websocket.Conn, expectedCount int) {
+	t.Helper()
+
 	closedClients := 0
 	for i, conn := range clients {
 		if err := conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
@@ -197,6 +203,8 @@ func setupMessageTestServer(t *testing.T) (*server.Hub, *http.Server) {
 
 // connectMessageTestClients creates two WebSocket clients for message exchange
 func connectMessageTestClients(t *testing.T) (*websocket.Conn, *websocket.Conn) {
+	t.Helper()
+
 	client1, err := testhelpers.ConnectWebSocket("ws://localhost:18083/ws")
 	if err != nil {
 		t.Fatalf("Failed to connect client1: %v", err)
@@ -222,7 +230,7 @@ func runMessageExchange(_ *testing.T, client1, client2 *websocket.Conn) (int, in
 	go receiveMessages(client2, &messagesReceived, &receiveMutex, stopReceiving)
 
 	// Send multiple messages
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := testhelpers.SendMessage(client1, "Test message")
 		if err == nil {
 			messagesSent++
@@ -272,6 +280,8 @@ func receiveMessages(client *websocket.Conn, messagesReceived *int, mutex *sync.
 
 // shutdownMessageTestServer initiates graceful shutdown of the test server
 func shutdownMessageTestServer(t *testing.T, httpServer *http.Server, hub *server.Hub) {
+	t.Helper()
+
 	if err := server.ShutdownServer(httpServer, 3*time.Second); err != nil {
 		t.Logf("HTTP server shutdown error (may be expected): %v", err)
 	}
@@ -317,7 +327,7 @@ func TestConcurrentShutdown(t *testing.T) {
 	var wg sync.WaitGroup
 	errors := make(chan error, 3)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

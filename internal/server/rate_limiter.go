@@ -2,20 +2,21 @@
 // throttling that protects the hub from abuse.
 package server
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
+// rateLimiter is a token bucket sized for a single connection.
+//
+// It is deliberately lock-free: each limiter is embedded by value in a Client
+// and only touched by that client's read pump, so the bucket needs no
+// synchronization. Do not share a limiter across goroutines.
 type rateLimiter struct {
-	mu        sync.Mutex
-	tokens    float64
-	capacity  float64
-	rate      float64
-	lastCheck time.Time
+	tokens   float64
+	capacity float64
+	perNano  float64 // tokens replenished per nanosecond
+	last     time.Time
 }
 
-func newRateLimiter(capacity int, interval time.Duration) *rateLimiter {
+func newRateLimiter(capacity int, interval time.Duration) rateLimiter {
 	if capacity <= 0 {
 		capacity = 1
 	}
@@ -23,32 +24,25 @@ func newRateLimiter(capacity int, interval time.Duration) *rateLimiter {
 		interval = time.Second
 	}
 
-	rate := float64(capacity) / interval.Seconds()
-	if rate <= 0 {
-		rate = float64(capacity)
+	perNano := float64(capacity) / float64(interval)
+	if perNano <= 0 {
+		perNano = float64(capacity)
 	}
 
-	return &rateLimiter{
-		tokens:    float64(capacity),
-		capacity:  float64(capacity),
-		rate:      rate,
-		lastCheck: time.Now(),
+	return rateLimiter{
+		tokens:   float64(capacity),
+		capacity: float64(capacity),
+		perNano:  perNano,
+		last:     time.Now(),
 	}
 }
 
+// allow consumes a token and reports whether the caller may proceed.
 func (rl *rateLimiter) allow() bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
 	now := time.Now()
-	elapsed := now.Sub(rl.lastCheck).Seconds()
-	rl.lastCheck = now
-
-	if elapsed > 0 {
-		rl.tokens += elapsed * rl.rate
-		if rl.tokens > rl.capacity {
-			rl.tokens = rl.capacity
-		}
+	if elapsed := now.Sub(rl.last); elapsed > 0 {
+		rl.last = now
+		rl.tokens = min(rl.capacity, rl.tokens+float64(elapsed)*rl.perNano)
 	}
 
 	if rl.tokens < 1 {

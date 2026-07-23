@@ -47,11 +47,11 @@ All builds stamp `main.Version`, `main.Commit`, and `main.BuildTime` via `-ldfla
 | `test`                       | `go test -v -race ./...`                                          |
 | `test-unit`                  | `./test/unit/...` only                                            |
 | `test-integration`           | `./test/integration/...` only                                     |
-| `test-coverage`              | All tests → `coverage.out` + `coverage.html` + a per-function summary |
+| `test-coverage`              | All tests, including internal ones → `coverage.out` + `coverage.html` + a per-function summary |
 | `test-coverage-unit`         | Same, unit tests only → `unit-coverage.*`                         |
 | `test-coverage-integration`  | Same, integration tests only → `integration-coverage.*`           |
 | `race`                       | `go test -race ./...` without `-v`                                |
-| `bench`                      | `go test -bench=. -benchmem ./...` (no benchmarks exist yet)       |
+| `bench`                      | `go test -bench=. -benchmem ./...` — hot-path benchmarks in `internal/server` |
 
 ## Quality and dependencies
 
@@ -69,7 +69,8 @@ All builds stamp `main.Version`, `main.Commit`, and `main.BuildTime` via `-ldfla
 | `all`           | `clean fmt vet lint test build`                                  |
 | `ci-local`      | `clean fmt vet lint test-coverage security-scan deps-check build` |
 
-`install-tools` installs golangci-lint, govulncheck, gosec, goimports, and air with `go install`.
+`install-tools` installs golangci-lint (pinned to the version CI uses), govulncheck, gosec,
+goimports, and air with `go install`.
 
 `docs` starts a local `godoc` server on <http://localhost:6060>.
 

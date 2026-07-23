@@ -3,7 +3,6 @@
 package server
 
 import (
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -30,7 +29,7 @@ func normalizeOrigins(origins []string) ([]string, bool) {
 
 		normalizedOrigin, ok := normalizeOrigin(trimmed)
 		if !ok {
-			log.Printf("Ignoring invalid origin in configuration: %q", origin)
+			log().Warn("ignoring invalid origin in configuration", "origin", origin)
 			continue
 		}
 
@@ -50,14 +49,23 @@ func normalizeOrigin(origin string) (string, bool) {
 		return "", false
 	}
 
-	normalized := strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
-	return normalized, true
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host), true
 }
 
 func isOriginAllowed(r *http.Request) bool {
+	// A missing Origin header is rejected even when the allow-list contains "*",
+	// so non-browser clients cannot bypass the check by omitting it.
 	originHeader := r.Header.Get("Origin")
 	if originHeader == "" {
 		return false
+	}
+
+	snap := currentSnapshot()
+
+	// Fast path: browsers send the already-canonical form, so the common case
+	// matches the allow-list without parsing a URL.
+	if _, exists := snap.origins[originHeader]; exists {
+		return true
 	}
 
 	normalizedOrigin, ok := normalizeOrigin(originHeader)
@@ -65,14 +73,11 @@ func isOriginAllowed(r *http.Request) bool {
 		return false
 	}
 
-	configMu.RLock()
-	defer configMu.RUnlock()
-
-	if allowAllOrigins {
+	if snap.allowAll {
 		return true
 	}
 
-	_, exists := allowedOrigins[normalizedOrigin]
+	_, exists := snap.origins[normalizedOrigin]
 	return exists
 }
 
@@ -81,6 +86,6 @@ func checkOrigin(r *http.Request) bool {
 		return true
 	}
 
-	log.Print("Blocked WebSocket connection from disallowed origin")
+	log().Warn("blocked WebSocket connection from disallowed origin", "remote_addr", r.RemoteAddr)
 	return false
 }

@@ -1,5 +1,4 @@
-version: '3.8'
-
+# The `version` key is obsolete in the Compose Specification and is omitted.
 services:
   gochat:
     build:
@@ -14,7 +13,13 @@ services:
       - MAX_MESSAGE_SIZE=512
       - RATE_LIMIT_BURST=5
       - RATE_LIMIT_REFILL_INTERVAL=1
+      - LOG_LEVEL=info
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
       interval: 30s

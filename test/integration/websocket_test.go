@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,10 +31,8 @@ const (
 )
 
 func mustMarshalMessage(t *testing.T, content string) []byte {
-	if t == nil {
-		panic("testing.T is required")
-	}
 	t.Helper()
+
 	payload, err := json.Marshal(server.Message{Content: content})
 	if err != nil {
 		t.Fatalf("Failed to marshal message: %v", err)
@@ -53,7 +52,8 @@ func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) 
 	if err == nil {
 		t.Fatalf("Expected no message, but received one")
 	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return
 	}
 	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
@@ -63,10 +63,8 @@ func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) 
 }
 
 func configureServerForTest(t *testing.T, baseURL string, customize func(cfg *server.Config)) {
-	if t == nil {
-		panic("testing.T is required")
-	}
 	t.Helper()
+
 	cfg := server.NewConfig()
 	cfg.AllowedOrigins = append([]string{baseURL}, cfg.AllowedOrigins...)
 	if customize != nil {
@@ -114,6 +112,8 @@ func TestWebSocketEndpointIntegration(t *testing.T) {
 
 // buildWebSocketURL constructs a WebSocket URL from the test server URL
 func buildWebSocketURL(t *testing.T, serverURL string) string {
+	t.Helper()
+
 	u, err := url.Parse(serverURL)
 	if err != nil {
 		t.Fatalf(errMsgParseURL, err)
@@ -125,6 +125,8 @@ func buildWebSocketURL(t *testing.T, serverURL string) string {
 
 // testSuccessfulWebSocketConnection tests establishing a WebSocket connection and sending messages
 func testSuccessfulWebSocketConnection(t *testing.T, wsURL, serverURL string) {
+	t.Helper()
+
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
 	if err != nil {
 		t.Fatalf("Failed to connect to WebSocket: %v", err)
@@ -150,6 +152,8 @@ func testSuccessfulWebSocketConnection(t *testing.T, wsURL, serverURL string) {
 
 // testInvalidHTTPMethod verifies that POST requests to WebSocket endpoint are rejected
 func testInvalidHTTPMethod(t *testing.T, serverURL string) {
+	t.Helper()
+
 	resp, err := http.Post(serverURL+"/ws", "text/plain", strings.NewReader("test"))
 	if err != nil {
 		t.Fatalf("Failed to make POST request: %v", err)
@@ -163,6 +167,8 @@ func testInvalidHTTPMethod(t *testing.T, serverURL string) {
 
 // testGETWithoutWebSocketHeaders verifies that GET requests without WebSocket headers are rejected
 func testGETWithoutWebSocketHeaders(t *testing.T, serverURL string) {
+	t.Helper()
+
 	resp, err := http.Get(serverURL + "/ws")
 	if err != nil {
 		t.Fatalf("Failed to make GET request: %v", err)
@@ -213,8 +219,10 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 
 // connectMultipleClients establishes multiple WebSocket connections
 func connectMultipleClients(t *testing.T, wsURL, serverURL string, numClients int) []*websocket.Conn {
+	t.Helper()
+
 	connections := make([]*websocket.Conn, numClients)
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
 		if err != nil {
 			t.Fatalf("Failed to connect client %d: %v", i, err)
@@ -228,6 +236,8 @@ func connectMultipleClients(t *testing.T, wsURL, serverURL string, numClients in
 
 // sendMessageFromClient sends a message from a specific client
 func sendMessageFromClient(t *testing.T, conn *websocket.Conn, content string) {
+	t.Helper()
+
 	if err := conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
 		t.Fatalf("Failed to send message: %v", err)
 	}
@@ -235,7 +245,9 @@ func sendMessageFromClient(t *testing.T, conn *websocket.Conn, content string) {
 
 // verifyMessageReceivedByOtherClients checks that all clients except sender receive the message
 func verifyMessageReceivedByOtherClients(t *testing.T, connections []*websocket.Conn, expectedContent string, senderIndex int) {
-	for i := 0; i < len(connections); i++ {
+	t.Helper()
+
+	for i := range connections {
 		if i == senderIndex {
 			continue
 		}
@@ -246,6 +258,8 @@ func verifyMessageReceivedByOtherClients(t *testing.T, connections []*websocket.
 // verifyClientReceivesMessage verifies a single client receives the expected message.
 // Handles batched messages separated by newlines.
 func verifyClientReceivesMessage(t *testing.T, conn *websocket.Conn, expectedContent string, clientIndex int) {
+	t.Helper()
+
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Errorf("Failed to set read deadline for client %d: %v", clientIndex, err)
 		return
@@ -290,11 +304,13 @@ func verifyClientReceivesMessage(t *testing.T, conn *websocket.Conn, expectedCon
 
 // testMalformedMessageIgnored sends malformed JSON and verifies it's ignored by all clients
 func testMalformedMessageIgnored(t *testing.T, connections []*websocket.Conn) {
+	t.Helper()
+
 	if err := connections[1].WriteMessage(websocket.TextMessage, []byte("not valid json")); err != nil {
 		t.Fatalf("Failed to send malformed message: %v", err)
 	}
 
-	for i := 0; i < len(connections); i++ {
+	for i := range connections {
 		if i == 1 {
 			continue
 		}
@@ -304,6 +320,8 @@ func testMalformedMessageIgnored(t *testing.T, connections []*websocket.Conn) {
 
 // closeAllConnections gracefully closes all WebSocket connections
 func closeAllConnections(t *testing.T, connections []*websocket.Conn) {
+	t.Helper()
+
 	for i, conn := range connections {
 		err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		if err != nil {
@@ -352,7 +370,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 
 	t.Run("Multiple Sequential Connections", func(t *testing.T) {
 		// Connect and disconnect multiple times
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
 			if err != nil {
 				t.Fatalf("Failed to connect on iteration %d: %v", i, err)
@@ -396,7 +414,7 @@ func TestWebSocketConcurrentConnections(t *testing.T) {
 
 // launchConcurrentClients starts multiple WebSocket clients concurrently
 func launchConcurrentClients(wsURL, serverURL string, numClients int, done chan error) {
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		message := "Message from client " + strconv.Itoa(i)
 		payload, err := json.Marshal(server.Message{Content: message})
 		if err != nil {
@@ -457,7 +475,9 @@ func readMessagesWithTimeout(conn *websocket.Conn, timeout time.Duration) {
 
 // waitForConcurrentClients waits for all concurrent clients to complete
 func waitForConcurrentClients(t *testing.T, numClients int, done chan error) {
-	for i := 0; i < numClients; i++ {
+	t.Helper()
+
+	for i := range numClients {
 		select {
 		case err := <-done:
 			if err != nil {
@@ -494,6 +514,8 @@ func TestWebSocketOriginValidation(t *testing.T) {
 
 // testAllowedOrigin verifies that connections from allowed origins succeed
 func testAllowedOrigin(t *testing.T, wsURL, allowedOrigin string) {
+	t.Helper()
+
 	header := http.Header{}
 	header.Set("Origin", allowedOrigin)
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
@@ -513,6 +535,8 @@ func testAllowedOrigin(t *testing.T, wsURL, allowedOrigin string) {
 
 // testDisallowedOrigin verifies that connections from disallowed origins are rejected
 func testDisallowedOrigin(t *testing.T, wsURL string) {
+	t.Helper()
+
 	header := http.Header{}
 	header.Set("Origin", "http://blocked.test")
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
@@ -615,6 +639,8 @@ func TestWebSocketRateLimiting(t *testing.T) {
 
 // connectRateLimitClient establishes a WebSocket connection for rate limit testing
 func connectRateLimitClient(t *testing.T, wsURL, serverURL, clientName string) (*websocket.Conn, *http.Response) {
+	t.Helper()
+
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
 	if err != nil {
 		t.Fatalf("Failed to connect %s: %v", clientName, err)
@@ -624,7 +650,9 @@ func connectRateLimitClient(t *testing.T, wsURL, serverURL, clientName string) (
 
 // sendAndReceiveBurstMessages sends and receives messages up to the burst limit
 func sendAndReceiveBurstMessages(t *testing.T, sender, receiver *websocket.Conn, burstLimit int) {
-	for i := 0; i < burstLimit; i++ {
+	t.Helper()
+
+	for i := range burstLimit {
 		content := fmt.Sprintf("msg-%d", i)
 		sendAndVerifyMessage(t, sender, receiver, content, i)
 	}
@@ -632,6 +660,8 @@ func sendAndReceiveBurstMessages(t *testing.T, sender, receiver *websocket.Conn,
 
 // sendAndVerifyMessage sends a message from sender and verifies receiver gets it
 func sendAndVerifyMessage(t *testing.T, sender, receiver *websocket.Conn, content string, msgNum int) {
+	t.Helper()
+
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
 		t.Fatalf("Failed to send message %d: %v", msgNum, err)
 	}
@@ -657,6 +687,8 @@ func sendAndVerifyMessage(t *testing.T, sender, receiver *websocket.Conn, conten
 
 // testOverLimitMessageRejected verifies that messages over the rate limit are rejected
 func testOverLimitMessageRejected(t *testing.T, sender, receiver *websocket.Conn) {
+	t.Helper()
+
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "over-limit")); err != nil {
 		t.Fatalf("Failed to send over-limit message: %v", err)
 	}
@@ -665,6 +697,8 @@ func testOverLimitMessageRejected(t *testing.T, sender, receiver *websocket.Conn
 
 // reconnectReceiver closes and reconnects the receiver client
 func reconnectReceiver(t *testing.T, wsURL, serverURL string, oldReceiver *websocket.Conn, oldResp *http.Response) (*websocket.Conn, *http.Response) {
+	t.Helper()
+
 	_ = oldReceiver.Close()
 	_ = oldResp.Body.Close()
 
@@ -677,6 +711,8 @@ func reconnectReceiver(t *testing.T, wsURL, serverURL string, oldReceiver *webso
 
 // testMessageAfterRefill verifies that messages can be sent after the rate limit refills
 func testMessageAfterRefill(t *testing.T, sender, receiver *websocket.Conn, refillInterval time.Duration) {
+	t.Helper()
+
 	time.Sleep(refillInterval + 100*time.Millisecond)
 
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "after-refill")); err != nil {
@@ -688,6 +724,8 @@ func testMessageAfterRefill(t *testing.T, sender, receiver *websocket.Conn, refi
 
 // waitForSpecificMessage waits for a specific message content to be received
 func waitForSpecificMessage(t *testing.T, receiver *websocket.Conn, expectedContent string, timeout time.Duration) {
+	t.Helper()
+
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
@@ -697,7 +735,8 @@ func waitForSpecificMessage(t *testing.T, receiver *websocket.Conn, expectedCont
 
 		_, raw, err := receiver.ReadMessage()
 		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				continue
 			}
 			t.Fatalf("Failed to receive message after refill: %v", err)

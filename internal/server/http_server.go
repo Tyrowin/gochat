@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -32,11 +31,13 @@ func ensureGlobalHub() *Hub {
 // It sets reasonable timeout values for production use.
 func CreateServer(port string, handler http.Handler) *http.Server {
 	return &http.Server{
-		Addr:         port,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              port,
+		Handler:           handler,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
 	}
 }
 
@@ -44,17 +45,17 @@ func CreateServer(port string, handler http.Handler) *http.Server {
 // This should be called before starting the HTTP server.
 func StartHub() {
 	ensureGlobalHub().Start()
-	log.Println("Hub started and ready to manage WebSocket connections")
+	log().Info("hub started and ready to manage WebSocket connections")
 }
 
 // StartServer starts the HTTP server and begins listening for connections.
-// It returns an error if the server fails to start.
+// It blocks until the server stops and returns an error if it fails to start.
 func StartServer(server *http.Server) error {
 	if server == nil {
-		return fmt.Errorf("http server is nil")
+		return errors.New("http server is nil")
 	}
 
-	log.Printf("Server listening on %s", server.Addr)
+	log().Info("server listening", "addr", server.Addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("listen and serve: %w", err)
 	}
@@ -66,24 +67,23 @@ func StartServer(server *http.Server) error {
 // It waits for active connections to close or until the timeout is reached.
 func ShutdownServer(server *http.Server, timeout time.Duration) error {
 	if server == nil {
-		return fmt.Errorf("http server is nil")
+		return errors.New("http server is nil")
 	}
 
-	log.Println("Shutting down HTTP server...")
+	log().Info("shutting down HTTP server")
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
 		return fmt.Errorf("shutdown http server: %w", err)
 	}
 
-	log.Println("HTTP server shutdown completed")
+	log().Info("HTTP server shutdown completed")
 	return nil
 }
 
-// GetHub returns the global hub instance for shutdown coordination
+// GetHub returns the global hub instance for shutdown coordination.
 func GetHub() *Hub {
 	return ensureGlobalHub()
 }

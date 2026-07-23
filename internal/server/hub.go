@@ -5,20 +5,26 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 )
 
 // Hub manages all WebSocket client connections and handles message broadcasting.
-// It maintains client registration/unregistration and ensures thread-safe operations
-// through mutex protection.
+//
+// The clients map is owned exclusively by the [Hub.Run] goroutine: registration,
+// unregistration, broadcast fan-out, and shutdown all happen there. That single
+// ownership removes lock traffic from the broadcast path entirely, so every
+// mutation of clients must be reached through one of the hub's channels.
 type Hub struct {
-	clients    map[*Client]bool
+	clients    map[*Client]struct{}
 	broadcast  chan BroadcastMessage
 	register   chan *Client
 	unregister chan *Client
-	mutex      sync.RWMutex
+
+	// failed is scratch space reused across broadcasts to avoid allocating a
+	// slice per message. Only Run touches it.
+	failed []*Client
+
 	wg         sync.WaitGroup
 	shutdown   chan struct{}
 	shutdownMu sync.Once
@@ -31,7 +37,7 @@ type Hub struct {
 // and client map. The returned Hub is ready to manage WebSocket connections.
 func NewHub() *Hub {
 	return &Hub{
-		clients:    make(map[*Client]bool),
+		clients:    make(map[*Client]struct{}),
 		broadcast:  make(chan BroadcastMessage),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
@@ -92,35 +98,9 @@ func (h *Hub) hasStarted() bool {
 	return h.started
 }
 
-func (h *Hub) safeSend(client *Client, message []byte) bool {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in safeSend: %v", r)
-		}
-	}()
-
-	// Hold the lock during the entire send operation to prevent race conditions
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
-
-	// Check if client is still registered and not closed
-	_, exists := h.clients[client]
-	if !exists || client.closed {
-		return false
-	}
-
-	// Try to send the message (channel might be closed, so we need to recover from panic)
-	select {
-	case client.send <- message:
-		return true
-	default:
-		return false
-	}
-}
-
-// Run starts the hub's main event loop, handling client registration, unregistration,
-// and message broadcasting. This method should be called in a separate goroutine
-// as it runs indefinitely.
+// Run starts the hub's main event loop, handling client registration,
+// unregistration, and message broadcasting. It runs until shutdown is signalled
+// and should be called in its own goroutine.
 func (h *Hub) Run() {
 	if !h.markStarted() {
 		return
@@ -135,46 +115,10 @@ func (h *Hub) Run() {
 			return
 
 		case client := <-h.register:
-			if client == nil {
-				log.Printf("Received nil client registration; skipping")
-				continue
-			}
-
-			h.mutex.Lock()
-			client.closed = false
-			h.clients[client] = true
-			clientCount := len(h.clients)
-			h.mutex.Unlock()
-			log.Printf("Client registered from %s. Total clients: %d", client.addr, clientCount)
-
-			h.wg.Add(2)
-			go func() {
-				defer h.wg.Done()
-				client.writePump()
-			}()
-			go func() {
-				defer h.wg.Done()
-				client.readPump()
-			}()
+			h.addClient(client)
 
 		case client := <-h.unregister:
-			if client == nil {
-				log.Printf("Received nil client unregistration; skipping")
-				continue
-			}
-
-			h.mutex.Lock()
-			if _, ok := h.clients[client]; ok {
-				delete(h.clients, client)
-				client.closed = true
-				clientCount := len(h.clients)
-				h.mutex.Unlock()
-				// Close the channel after releasing the lock
-				close(client.send)
-				log.Printf("Client unregistered from %s. Total clients: %d", client.addr, clientCount)
-			} else {
-				h.mutex.Unlock()
-			}
+			h.removeClient(client)
 
 		case broadcastMsg := <-h.broadcast:
 			h.handleBroadcast(broadcastMsg)
@@ -182,104 +126,86 @@ func (h *Hub) Run() {
 	}
 }
 
-// handleBroadcast processes a broadcast message and sends it to all clients except the sender
-func (h *Hub) handleBroadcast(broadcastMsg BroadcastMessage) {
-	clients := h.getClientSnapshot()
-	targetCount := h.calculateTargetCount(len(clients), broadcastMsg.Sender)
-
-	log.Printf("Broadcasting message to %d clients", targetCount)
-
-	clientsToRemove := h.broadcastToClients(clients, broadcastMsg)
-	h.removeFailedClients(clientsToRemove)
-}
-
-// getClientSnapshot returns a thread-safe snapshot of all current clients
-func (h *Hub) getClientSnapshot() []*Client {
-	h.mutex.RLock()
-	defer h.mutex.RUnlock()
-
-	clients := make([]*Client, 0, len(h.clients))
-	for client := range h.clients {
-		clients = append(clients, client)
-	}
-	return clients
-}
-
-// calculateTargetCount determines how many clients will receive the broadcast
-func (h *Hub) calculateTargetCount(clientCount int, sender *Client) int {
-	targetCount := clientCount
-	if sender != nil {
-		targetCount--
-	}
-	if targetCount < 0 {
-		targetCount = 0
-	}
-	return targetCount
-}
-
-// broadcastToClients sends the message to all clients except the sender and returns failed clients
-func (h *Hub) broadcastToClients(clients []*Client, broadcastMsg BroadcastMessage) []*Client {
-	var clientsToRemove []*Client
-
-	for _, client := range clients {
-		if broadcastMsg.Sender != nil && client == broadcastMsg.Sender {
-			continue
-		}
-		if !h.safeSend(client, broadcastMsg.Payload) {
-			clientsToRemove = append(clientsToRemove, client)
-		}
-	}
-
-	return clientsToRemove
-}
-
-// removeFailedClients removes clients that failed to receive messages and closes their channels
-func (h *Hub) removeFailedClients(clientsToRemove []*Client) {
-	if len(clientsToRemove) == 0 {
+// addClient registers a client and starts its read and write pumps.
+func (h *Hub) addClient(client *Client) {
+	if client == nil {
+		log().Warn("received nil client registration; skipping")
 		return
 	}
 
-	h.mutex.Lock()
-	var channelsToClose []chan []byte
-	for _, client := range clientsToRemove {
-		if _, exists := h.clients[client]; exists {
-			delete(h.clients, client)
-			client.closed = true
-			channelsToClose = append(channelsToClose, client.send)
-			log.Printf("Client from %s removed due to full send buffer", client.addr)
+	h.clients[client] = struct{}{}
+	log().Info("client registered", "addr", client.addr, "total_clients", len(h.clients))
+
+	h.wg.Add(2)
+	go func() {
+		defer h.wg.Done()
+		client.writePump()
+	}()
+	go func() {
+		defer h.wg.Done()
+		client.readPump()
+	}()
+}
+
+// removeClient unregisters a client and closes its send channel. It is a no-op
+// for clients that are already gone, which makes double unregistration safe.
+func (h *Hub) removeClient(client *Client) {
+	if client == nil {
+		log().Warn("received nil client unregistration; skipping")
+		return
+	}
+
+	if _, ok := h.clients[client]; !ok {
+		return
+	}
+
+	delete(h.clients, client)
+	close(client.send)
+	log().Info("client unregistered", "addr", client.addr, "total_clients", len(h.clients))
+}
+
+// handleBroadcast fans a message out to every client except the sender.
+//
+// Delivery is non-blocking: a client whose buffer is full is dropped rather
+// than allowed to stall the hub for everyone else.
+func (h *Hub) handleBroadcast(broadcastMsg BroadcastMessage) {
+	h.failed = h.failed[:0]
+	delivered := 0
+
+	for client := range h.clients {
+		if client == broadcastMsg.Sender {
+			continue
+		}
+
+		select {
+		case client.send <- broadcastMsg.Payload:
+			delivered++
+		default:
+			h.failed = append(h.failed, client)
 		}
 	}
-	h.mutex.Unlock()
 
-	// Close channels after releasing the lock
-	for _, ch := range channelsToClose {
-		close(ch)
+	dropped := len(h.failed)
+	for _, client := range h.failed {
+		log().Warn("dropping client with a full send buffer", "addr", client.addr)
+		h.removeClient(client)
+	}
+	clear(h.failed)
+
+	if debugEnabled() {
+		log().Debug("broadcast complete", "delivered", delivered, "dropped", dropped)
 	}
 }
 
-// shutdownClients gracefully closes all active client connections
+// shutdownClients closes every active client connection, which unblocks the
+// read pumps so they can exit.
 func (h *Hub) shutdownClients() {
-	log.Println("Shutting down all client connections...")
-
-	h.mutex.Lock()
-	clients := make([]*Client, 0, len(h.clients))
 	for client := range h.clients {
-		clients = append(clients, client)
-	}
-	h.mutex.Unlock()
-
-	// Close all client connections
-	for _, client := range clients {
-		if client.conn != nil {
-			if err := client.conn.Close(); err != nil {
-				if !isExpectedCloseError(err) {
-					log.Printf("Error closing client connection from %s: %v", client.addr, err)
-				}
-			}
-		}
+		client.closeConnection()
 	}
 
-	log.Printf("Closed %d client connections", len(clients))
+	log().Info("closed client connections", "count", len(h.clients))
+	clear(h.clients)
 }
 
 // Shutdown initiates graceful shutdown of the hub and waits for all goroutines to complete.
@@ -290,9 +216,8 @@ func (h *Hub) Shutdown(timeout time.Duration) error {
 		return nil
 	}
 
-	log.Println("Initiating hub shutdown...")
+	log().Info("initiating hub shutdown")
 
-	// Signal shutdown
 	h.shutdownMu.Do(func() {
 		close(h.shutdown)
 	})
@@ -300,30 +225,28 @@ func (h *Hub) Shutdown(timeout time.Duration) error {
 	runLoopTimer := time.NewTimer(timeout)
 	defer runLoopTimer.Stop()
 
-	// Wait for Run() to complete
 	select {
 	case <-h.done:
 	case <-runLoopTimer.C:
-		log.Println("Hub shutdown timeout reached while waiting for the event loop to stop")
+		log().Error("hub shutdown timed out waiting for the event loop")
 		return fmt.Errorf("hub event loop shutdown timed out: %w", context.DeadlineExceeded)
 	}
 
-	// Wait for all client goroutines to finish with timeout
-	done := make(chan struct{})
+	clientsDone := make(chan struct{})
 	go func() {
 		h.wg.Wait()
-		close(done)
+		close(clientsDone)
 	}()
 
 	clientTimer := time.NewTimer(timeout)
 	defer clientTimer.Stop()
 
 	select {
-	case <-done:
-		log.Println("Hub shutdown completed successfully")
+	case <-clientsDone:
+		log().Info("hub shutdown completed")
 		return nil
 	case <-clientTimer.C:
-		log.Println("Hub shutdown timeout reached, some goroutines may still be running")
+		log().Error("hub shutdown timed out; some client goroutines may still be running")
 		return fmt.Errorf("hub client shutdown timed out: %w", context.DeadlineExceeded)
 	}
 }
