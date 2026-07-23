@@ -3,7 +3,6 @@
 [![CI Pipeline](https://github.com/maltemindedal/gochat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/maltemindedal/gochat/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/maltemindedal/gochat)](https://golang.org/)
-[![Go Report Card](https://goreportcard.com/badge/github.com/maltemindedal/gochat)](https://goreportcard.com/report/github.com/maltemindedal/gochat)
 
 A high-performance, production-ready WebSocket chat server built with Go. GoChat provides real-time multi-client communication with built-in security features, comprehensive testing, and cross-platform support.
 
