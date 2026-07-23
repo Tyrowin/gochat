@@ -73,35 +73,32 @@ func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	webSocketHandlerForHub(GetHub()).ServeHTTP(w, r)
 }
 
-// HealthHandler provides a simple health check endpoint that returns server status.
-// It responds with a plain text message indicating the server is running.
-func HealthHandler(w http.ResponseWriter, r *http.Request) {
+// writeStatic serves a fixed body whose length is known ahead of time, skipping
+// the sniffing and chunking net/http would otherwise do. It is a no-op once the
+// client has gone away.
+func writeStatic(w http.ResponseWriter, r *http.Request, contentType, contentLength string, body []byte) {
 	if r.Context().Err() != nil {
 		return
 	}
 
 	header := w.Header()
-	header.Set("Content-Type", "text/plain")
-	header.Set("Content-Length", healthLength)
+	header.Set("Content-Type", contentType)
+	header.Set("Content-Length", contentLength)
 
-	if _, err := w.Write(healthResponse); err != nil {
-		log().Debug("error writing health response", "error", err)
+	if _, err := w.Write(body); err != nil {
+		log().Debug("error writing response", "path", r.URL.Path, "error", err)
 	}
+}
+
+// HealthHandler provides a simple health check endpoint that returns server status.
+// It responds with a plain text message indicating the server is running.
+func HealthHandler(w http.ResponseWriter, r *http.Request) {
+	writeStatic(w, r, "text/plain", healthLength, healthResponse)
 }
 
 // TestPageHandler serves an HTML page for exercising the WebSocket endpoint.
 // It provides a simple web interface to connect to the WebSocket endpoint,
 // send messages, and view real-time chat communication.
 func TestPageHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Context().Err() != nil {
-		return
-	}
-
-	header := w.Header()
-	header.Set("Content-Type", "text/html; charset=utf-8")
-	header.Set("Content-Length", testPageLength)
-
-	if _, err := w.Write(testPageHTML); err != nil {
-		log().Debug("error writing test page response", "error", err)
-	}
+	writeStatic(w, r, "text/html; charset=utf-8", testPageLength, testPageHTML)
 }

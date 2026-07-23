@@ -94,8 +94,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Pinned like every other tool in this workflow, so a govulncheck release
+      # cannot change the result of a rerun of an old commit.
       - name: Run govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
   docker:
     name: Docker Build and Scan
@@ -117,9 +119,11 @@ jobs:
           output: trivy-results.sarif
           ignore-unfixed: true
 
+      # Forks cannot write security events, so only upload from branches in this
+      # repository. PRs from forks still build and scan; they just skip the
+      # upload instead of failing it.
       - name: Upload Trivy results
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        continue-on-error: true
+        if: always() && github.event.pull_request.head.repo.fork != true
         with:
           sarif_file: trivy-results.sarif

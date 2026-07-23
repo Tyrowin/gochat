@@ -38,7 +38,15 @@ func newRateLimiter(capacity int, interval time.Duration) rateLimiter {
 }
 
 // allow consumes a token and reports whether the caller may proceed.
+//
+// The zero value permits everything. A limiter only throttles once
+// [newRateLimiter] has given it a capacity, so a Client assembled without one
+// — as tests do — is unlimited rather than silently blocked.
 func (rl *rateLimiter) allow() bool {
+	if rl.capacity <= 0 {
+		return true
+	}
+
 	now := time.Now()
 	if elapsed := now.Sub(rl.last); elapsed > 0 {
 		rl.last = now

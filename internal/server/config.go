@@ -34,16 +34,16 @@ type Config struct {
 	RateLimit      RateLimitConfig
 }
 
-// snapshot is an immutable, fully resolved view of the configuration. It is
-// published atomically so hot paths (origin checks, client construction) can
-// read it without locking.
-type snapshot struct {
+// configSnapshot is an immutable, fully resolved view of the configuration.
+// It is published atomically so hot paths (origin checks, client construction)
+// can read it without locking.
+type configSnapshot struct {
 	cfg      Config
 	origins  map[string]struct{}
 	allowAll bool
 }
 
-var activeConfig atomic.Pointer[snapshot]
+var activeConfig atomic.Pointer[configSnapshot]
 
 func init() {
 	SetConfig(nil)
@@ -61,9 +61,9 @@ func defaultConfig() Config {
 	}
 }
 
-// sanitizeConfig substitutes defaults for invalid values and resolves the
-// origin allow-list into a lookup set.
-func sanitizeConfig(cfg Config) *snapshot {
+// newConfigSnapshot substitutes defaults for invalid values and resolves the
+// origin allow-list into a lookup set, returning the snapshot to publish.
+func newConfigSnapshot(cfg Config) *configSnapshot {
 	switch {
 	case cfg.Port == "":
 		cfg.Port = defaultPort
@@ -91,17 +91,17 @@ func sanitizeConfig(cfg Config) *snapshot {
 		origins[origin] = struct{}{}
 	}
 
-	return &snapshot{cfg: cfg, origins: origins, allowAll: allowAll}
+	return &configSnapshot{cfg: cfg, origins: origins, allowAll: allowAll}
 }
 
 // SetConfig applies the provided configuration. Passing nil resets to defaults.
 func SetConfig(cfg *Config) {
 	if cfg == nil {
-		activeConfig.Store(sanitizeConfig(defaultConfig()))
+		activeConfig.Store(newConfigSnapshot(defaultConfig()))
 		return
 	}
 
-	activeConfig.Store(sanitizeConfig(Config{
+	activeConfig.Store(newConfigSnapshot(Config{
 		Port:           cfg.Port,
 		AllowedOrigins: slices.Clone(cfg.AllowedOrigins),
 		MaxMessageSize: cfg.MaxMessageSize,
@@ -111,12 +111,12 @@ func SetConfig(cfg *Config) {
 
 // currentSnapshot returns the active resolved configuration without copying.
 // Callers must treat the result as read-only.
-func currentSnapshot() *snapshot {
+func currentSnapshot() *configSnapshot {
 	if snap := activeConfig.Load(); snap != nil {
 		return snap
 	}
 
-	return sanitizeConfig(defaultConfig())
+	return newConfigSnapshot(defaultConfig())
 }
 
 // NewConfig creates a Config instance populated with default values for all settings.

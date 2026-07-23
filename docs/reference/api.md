@@ -75,8 +75,9 @@ sends application-level errors — failures are visible only as a dropped messag
 1. A client sends a JSON frame.
 2. The server **normalizes it** to exactly `{"content":...}` before broadcasting. Unknown fields are
    discarded; a payload with no `content` field is relayed as `{"content":""}`. Characters that
-   `encoding/json` escapes stay escaped on the way out, so `<`, `>`, and `&` are relayed as
-   `<`, `>`, and `&`.
+   `encoding/json` escapes stay escaped on the way out, so the characters `<`, `>`, and `&` arrive
+   as the six-character sequences `\u003c`, `\u003e`, and `\u0026`. That is JSON
+   transport encoding, not sanitization: a client rendering the text must still escape on output.
 3. The message is fanned out to every other connected client. **The sender does not receive its own
    message.**
 4. Nothing is persisted. A client that connects later sees no history.

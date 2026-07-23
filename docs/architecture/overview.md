@@ -41,7 +41,8 @@ internal/server/
   client.go                 Per-connection read and write pumps
   origin.go                 Origin normalization and allow-list checks
   rate_limiter.go           Per-connection token bucket
-  types.go                  Message payloads and the JSON normalizer
+  types.go                  Message payloads and connection-error helpers
+  message_json.go           The wire-format encoder, kept identical to encoding/json
 test/                       Unit and integration suites (see guides/testing.md)
 ```
 
@@ -89,8 +90,9 @@ restores defaults, which is what the tests use. Invalid values never abort start
 back.
 
 **Logging** (`logging.go`) — a single `log/slog` logger shared by the package, its level read from
-`LOG_LEVEL`. Per-message records are emitted at debug level and guarded by a cached level check, so
-at the default `info` level a busy server does no logging work per message.
+`LOG_LEVEL`. Per-message records are emitted at debug level behind a `debugEnabled()` check, so at
+the default `info` level a busy server skips work that exists only to be logged — slog cannot do
+that itself, because arguments are evaluated before it sees them.
 
 ## Message flow
 
@@ -164,11 +166,15 @@ and the allocation counts as the durable part.
 
 | Path                                | Cost                    | Notes                                        |
 | ----------------------------------- | ----------------------- | -------------------------------------------- |
-| Broadcast fan-out, 1000 clients     | ~35 us, 0 allocs        | No lock, no per-message client snapshot       |
+| Broadcast fan-out, 1000 clients     | ~35 us, 0 allocs        | Includes draining all 999 receivers; see below |
 | Message normalization, canonical    | ~46 ns, 1 alloc         | Scan and copy; no JSON round trip             |
 | Message normalization, slow path    | ~590 ns, 8 allocs       | `encoding/json` decode plus hand-rolled encode |
 | Rate limit check                    | ~6 ns, 0 allocs         | Lock-free token bucket                        |
-| Origin check, canonical header      | ~23 ns, 0 allocs        | Set lookup before any URL parsing             |
+| Origin check, canonical header      | ~23 ns, 0 allocs        | Per handshake, not per message                 |
+
+The fan-out figure is conservative: `BenchmarkHubBroadcast` drains every receiver inside the timed
+loop, because a benchmark outruns any consumer goroutine and the hub would otherwise start evicting
+clients mid-measurement. Real fan-out is cheaper than the number suggests.
 
 The single remaining allocation per message is the normalized payload itself, which is shared by
 reference with every receiving client rather than copied per recipient. Write buffers are pooled

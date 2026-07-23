@@ -74,6 +74,36 @@ func BenchmarkHubBroadcast(b *testing.B) {
 	}
 }
 
+// TestZeroValueRateLimiterAllows pins the zero value as unlimited. A Client
+// assembled without NewClient must not be silently throttled to nothing.
+func TestZeroValueRateLimiterAllows(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{}
+	for i := range 100 {
+		if !c.rateLimiter.allow() {
+			t.Fatalf("zero-value limiter denied message %d", i)
+		}
+	}
+}
+
+// TestRateLimiterThrottlesAtCapacity checks the configured limiter still
+// throttles, so the zero-value escape hatch has not disabled the real path.
+func TestRateLimiterThrottlesAtCapacity(t *testing.T) {
+	t.Parallel()
+
+	rl := newRateLimiter(3, time.Hour)
+	for i := range 3 {
+		if !rl.allow() {
+			t.Fatalf("burst token %d was denied", i)
+		}
+	}
+
+	if rl.allow() {
+		t.Error("limiter allowed a message past its burst")
+	}
+}
+
 func BenchmarkRateLimiterAllow(b *testing.B) {
 	rl := newRateLimiter(1_000_000, time.Second)
 

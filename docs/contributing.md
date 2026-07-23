@@ -76,8 +76,16 @@ in `internal/server`:
 - **Concurrent state is guarded** — either owned by a single goroutine (as the hub's run loop owns
   the registry) or behind a mutex. Never leave a blocking send without a `case <-shutdown` escape.
 
-Linters enabled in `.golangci.yml`: `errcheck`, `govet`, `staticcheck`, `unused`, `ineffassign`,
-`gosec`, `revive`, `misspell`, `bodyclose`, `copyloopvar`, `unconvert`.
+Linters enabled in `.golangci.yml`, grouped as the file groups them:
+
+- **Correctness** — `errcheck`, `govet`, `staticcheck`, `unused`, `ineffassign`, `bodyclose`,
+  `errorlint`, `errname`, `wastedassign`, `nilerr`
+- **Security** — `gosec`
+- **Style and modernization** — `revive`, `misspell`, `unconvert`, `copyloopvar`, `intrange`,
+  `usestdlibvars`, `perfsprint`, `sloglint`, `nolintlint`
+- **Tests** — `thelper`, `usetesting`
+
+Formatting is enforced separately by the `formatters` block (`gofmt`, `goimports`).
 
 The repository also carries [`AGENTS.md`](../AGENTS.md), guidance for AI coding assistants: prefer
 the minimal change, do not refactor adjacent code, match the surrounding style.

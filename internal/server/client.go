@@ -4,6 +4,7 @@ package server
 
 import (
 	"errors"
+	"io"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -243,33 +244,55 @@ func (c *Client) writeTextMessage(message []byte) bool {
 		return false
 	}
 
-	if _, err = w.Write(message); err != nil {
-		log().Debug("error writing message", "addr", c.addr, "error", err)
+	if !c.writeFrameBody(w, message) {
+		// The frame is already broken; discard the writer without flushing it.
 		_ = w.Close()
 		return false
 	}
 
+	return c.closeWriter(w)
+}
+
+// writeFrameBody writes message followed by everything already queued on the
+// send channel, newline-separated. It reports whether the whole frame was
+// written.
+func (c *Client) writeFrameBody(w io.Writer, message []byte) bool {
+	if !c.writeChunk(w, message, "message") {
+		return false
+	}
+
+	// Snapshot the depth once: anything queued after this point belongs to the
+	// next frame.
 	for range len(c.send) {
 		queued, ok := <-c.send
 		if !ok {
-			_ = w.Close()
 			return false
 		}
 
-		if _, err = w.Write([]byte{'\n'}); err != nil {
-			log().Debug("error writing separator", "addr", c.addr, "error", err)
-			_ = w.Close()
-			return false
-		}
-
-		if _, err = w.Write(queued); err != nil {
-			log().Debug("error writing queued message", "addr", c.addr, "error", err)
-			_ = w.Close()
+		if !c.writeChunk(w, newline, "separator") || !c.writeChunk(w, queued, "queued message") {
 			return false
 		}
 	}
 
-	if err = w.Close(); err != nil {
+	return true
+}
+
+// newline separates coalesced messages inside a single frame.
+var newline = []byte{'\n'}
+
+// writeChunk writes one span of bytes into the open frame, logging what failed.
+func (c *Client) writeChunk(w io.Writer, chunk []byte, what string) bool {
+	if _, err := w.Write(chunk); err != nil {
+		log().Debug("error writing frame chunk", "addr", c.addr, "chunk", what, "error", err)
+		return false
+	}
+
+	return true
+}
+
+// closeWriter flushes the frame to the connection.
+func (c *Client) closeWriter(w io.Closer) bool {
+	if err := w.Close(); err != nil {
 		log().Debug("error closing writer", "addr", c.addr, "error", err)
 		return false
 	}

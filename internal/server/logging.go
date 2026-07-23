@@ -10,10 +10,7 @@ import (
 	"sync/atomic"
 )
 
-var (
-	activeLogger atomic.Pointer[slog.Logger]
-	debugOn      atomic.Bool
-)
+var activeLogger atomic.Pointer[slog.Logger]
 
 func init() {
 	SetLogger(NewLogger(LogLevelFromEnv()))
@@ -49,7 +46,6 @@ func SetLogger(logger *slog.Logger) {
 	}
 
 	activeLogger.Store(logger)
-	debugOn.Store(logger.Enabled(context.Background(), slog.LevelDebug))
 }
 
 // log returns the active logger, falling back to the slog default before the
@@ -62,8 +58,13 @@ func log() *slog.Logger {
 	return slog.Default()
 }
 
-// debugEnabled reports whether debug records are worth building. It is checked
-// on per-message hot paths to avoid formatting work that would be discarded.
+// debugEnabled reports whether debug records are worth building. Per-message
+// hot paths check it before doing work that only exists to be logged — such as
+// converting a payload to a string — which slog itself cannot avoid, because
+// arguments are evaluated before it sees them.
+//
+// It asks the handler every time rather than caching the answer, so a level
+// that changes at runtime (a [slog.LevelVar]) takes effect immediately.
 func debugEnabled() bool {
-	return debugOn.Load()
+	return log().Enabled(context.Background(), slog.LevelDebug)
 }
