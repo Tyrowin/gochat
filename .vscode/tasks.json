@@ -6,7 +6,7 @@
       "type": "shell",
       "command": "make build-current",
       "windows": {
-        "command": "go build -o ${workspaceFolder}\\bin\\gochat.exe ${workspaceFolder}\\cmd\\server"
+        "command": "go build -o ${workspaceFolder}\\bin\\blip.exe ${workspaceFolder}\\cmd\\server"
       },
       "group": {
         "kind": "build",
@@ -32,9 +32,9 @@
     {
       "label": "Run Server",
       "type": "shell",
-      "command": "${workspaceFolder}/bin/gochat",
+      "command": "${workspaceFolder}/bin/blip",
       "windows": {
-        "command": "${workspaceFolder}\\bin\\gochat.exe"
+        "command": "${workspaceFolder}\\bin\\blip.exe"
       },
       "group": "none",
       "presentation": {

@@ -1,4 +1,4 @@
-// Package server wires HTTP handlers into a ServeMux for the GoChat
+// Package server wires HTTP handlers into a ServeMux for the Blip
 // application via routing helpers.
 package server
 

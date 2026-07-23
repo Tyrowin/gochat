@@ -1,6 +1,6 @@
 # Configuration Reference
 
-GoChat is configured entirely through environment variables, read once at startup by
+Blip is configured entirely through environment variables, read once at startup by
 `NewConfigFromEnv` (`internal/server/config.go`). There are no command-line flags and no
 configuration file.
 

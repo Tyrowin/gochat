@@ -1,6 +1,6 @@
-# GoChat Documentation
+# Blip Documentation
 
-Everything written about GoChat, grouped by what you are trying to do. Start with
+Everything written about Blip, grouped by what you are trying to do. Start with
 [Getting started](getting-started.md) if the server has never run on your machine.
 
 ## Tutorial — learning by doing

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/maltemindedal/gochat/internal/server"
-	"github.com/maltemindedal/gochat/test/testhelpers"
+	"github.com/maltemindedal/blip/internal/server"
+	"github.com/maltemindedal/blip/test/testhelpers"
 )
 
 const (

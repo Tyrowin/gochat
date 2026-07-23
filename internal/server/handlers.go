@@ -15,7 +15,7 @@ import (
 var testPageHTML []byte
 
 var (
-	healthResponse = []byte("GoChat server is running!")
+	healthResponse = []byte("Blip server is running!")
 
 	// testPageLength is precomputed so the handler does no per-request work
 	// beyond writing the embedded bytes.

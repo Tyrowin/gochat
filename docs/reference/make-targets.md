@@ -11,15 +11,15 @@ targets work identically on Windows, macOS, and Linux. GNU Make is required on W
 
 | Target                | What it does                                                             |
 | --------------------- | ------------------------------------------------------------------------ |
-| `build`               | `fmt` + `vet`, then build to `bin/gochat` (`bin/gochat.exe` on Windows)   |
+| `build`               | `fmt` + `vet`, then build to `bin/blip` (`bin/blip.exe` on Windows)   |
 | `build-raw`           | Same build without the `fmt`/`vet` prerequisites                         |
 | `build-current`       | Build for the host platform with `CGO_ENABLED=0`                         |
-| `build-linux`         | Cross-compile → `bin/linux/gochat-amd64`                                  |
-| `build-linux-arm64`   | Cross-compile → `bin/linux/gochat-arm64`                                  |
-| `build-darwin`        | Cross-compile → `bin/MacOS/gochat-amd64`                                  |
-| `build-darwin-arm64`  | Cross-compile → `bin/MacOS/gochat-arm64`                                  |
-| `build-windows`       | Cross-compile → `bin/windows/gochat-amd64.exe`                            |
-| `build-windows-arm64` | Cross-compile → `bin/windows/gochat-arm64.exe`                            |
+| `build-linux`         | Cross-compile → `bin/linux/blip-amd64`                                  |
+| `build-linux-arm64`   | Cross-compile → `bin/linux/blip-arm64`                                  |
+| `build-darwin`        | Cross-compile → `bin/MacOS/blip-amd64`                                  |
+| `build-darwin-arm64`  | Cross-compile → `bin/MacOS/blip-arm64`                                  |
+| `build-windows`       | Cross-compile → `bin/windows/blip-amd64.exe`                            |
+| `build-windows-arm64` | Cross-compile → `bin/windows/blip-arm64.exe`                            |
 | `build-all`           | All six cross-compile targets                                            |
 | `release`             | `clean fmt vet lint test`, then trimmed static builds plus SHA256 checksums |
 | `list-platforms`      | `go tool dist list`                                                       |
@@ -37,7 +37,7 @@ All builds stamp `main.Version`, `main.Commit`, and `main.BuildTime` via `-ldfla
 | ------------ | -------------------------------------------------------- |
 | `run`        | `build`, then run the binary in the foreground            |
 | `dev`        | Run under [air](https://github.com/air-verse/air) with rebuild-on-save (config: `.air.toml`) |
-| `docker-build` | `docker build -t gochat:$(VERSION)` and tag `:latest`   |
+| `docker-build` | `docker build -t blip:$(VERSION)` and tag `:latest`   |
 | `docker-run` | `docker-build`, then run with `-p 8080:8080`              |
 
 ## Test

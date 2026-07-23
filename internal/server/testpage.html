@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>GoChat WebSocket Test</title>
+    <title>Blip WebSocket Test</title>
     <style>
         :root { color-scheme: light dark; }
         body {
@@ -49,7 +49,7 @@
     </style>
 </head>
 <body>
-    <h1>GoChat WebSocket Test</h1>
+    <h1>Blip WebSocket Test</h1>
 
     <div id="status" class="status disconnected">Disconnected</div>
 
@@ -96,7 +96,7 @@
             ws = new WebSocket(endpoint());
 
             ws.onopen = () => {
-                addMessage('Connected to GoChat server');
+                addMessage('Connected to Blip server');
                 updateStatus(true);
             };
 

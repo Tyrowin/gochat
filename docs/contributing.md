@@ -8,8 +8,8 @@ and how a pull request gets reviewed.
 Prerequisites: Go 1.26.5 or later, Git, and optionally GNU Make.
 
 ```bash
-git clone https://github.com/maltemindedal/gochat.git
-cd gochat
+git clone https://github.com/maltemindedal/blip.git
+cd blip
 make install-tools
 make help
 ```

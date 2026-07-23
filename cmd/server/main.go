@@ -1,12 +1,12 @@
 /*
-GoChat is a real-time WebSocket-based chat server.
+Blip is a real-time WebSocket-based chat server.
 
 The server provides WebSocket endpoints for real-time communication
 and includes a built-in test page for development and testing.
 
 Usage:
 
-	gochat
+	blip
 
 The server will start on port 8080 by default and provide the following endpoints:
 
@@ -27,7 +27,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/maltemindedal/gochat/internal/server"
+	"github.com/maltemindedal/blip/internal/server"
 )
 
 // Shutdown budget: the HTTP server and the hub each get half of the total.
@@ -56,7 +56,7 @@ func run() error {
 	slog.SetDefault(logger)
 	server.SetLogger(logger)
 
-	logger.Info("starting GoChat server",
+	logger.Info("starting Blip server",
 		"version", Version, "commit", Commit, "build_time", BuildTime)
 
 	config := server.NewConfigFromEnv()

@@ -1,6 +1,6 @@
 # Security Hardening
 
-What GoChat protects against, how to configure those protections, and what it deliberately does not
+What Blip protects against, how to configure those protections, and what it deliberately does not
 do. Exact defaults and parsing rules are in the
 [configuration reference](../reference/configuration.md).
 
@@ -126,7 +126,7 @@ CI reads directly — plus the `Dockerfile` and the README.
 
 Do not open a public issue for a security problem. Contact the maintainer privately through
 [GitHub](https://github.com/maltemindedal) — use a
-[private security advisory](https://github.com/maltemindedal/gochat/security/advisories/new) on the
+[private security advisory](https://github.com/maltemindedal/blip/security/advisories/new) on the
 repository — and include a description, reproduction steps, and impact.
 
 > **TODO(verify):** No security contact address or disclosure policy exists in the repository. Add a

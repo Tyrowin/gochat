@@ -1,4 +1,4 @@
-# Multi-stage Dockerfile for the GoChat server.
+# Multi-stage Dockerfile for the Blip server.
 # Produces a minimal, non-root production image.
 
 # Stage 1: build
@@ -21,24 +21,24 @@ ARG TARGETARCH=amd64
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags="-s -w -X main.Version=${VERSION}" \
-    -o gochat \
+    -o blip \
     ./cmd/server
 
 # Stage 2: runtime
 FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata wget && \
-    addgroup -g 1000 gochat && \
-    adduser -D -u 1000 -G gochat gochat
+    addgroup -g 1000 blip && \
+    adduser -D -u 1000 -G blip blip
 
 WORKDIR /app
-COPY --from=builder --chown=gochat:gochat /build/gochat ./gochat
+COPY --from=builder --chown=blip:blip /build/blip ./blip
 
-USER gochat
+USER blip
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
 
-ENTRYPOINT ["/app/gochat"]
+ENTRYPOINT ["/app/blip"]

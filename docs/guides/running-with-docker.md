@@ -7,7 +7,7 @@ The repository ships a multi-stage [`Dockerfile`](../../Dockerfile) and a
 
 ```bash
 docker compose up -d --build
-docker compose logs -f gochat
+docker compose logs -f blip
 ```
 
 This builds the image, publishes port 8080, and applies the environment block in
@@ -42,16 +42,16 @@ The Go process never reads `.env` on its own — only Compose (or `docker run --
 ## Plain Docker
 
 ```bash
-docker build -t gochat:latest .
+docker build -t blip:latest .
 
 docker run -d \
-  --name gochat \
+  --name blip \
   -p 8080:8080 \
   -e ALLOWED_ORIGINS="https://chat.example.com" \
   -e MAX_MESSAGE_SIZE=1024 \
   -e RATE_LIMIT_BURST=10 \
   --restart unless-stopped \
-  gochat:latest
+  blip:latest
 ```
 
 `make docker-build` and `make docker-run` wrap the same commands, tagging the image with the
@@ -68,7 +68,7 @@ for a static, stripped binary. `GOOS` and `GOARCH` come from buildx's `TARGETOS`
 arguments, defaulting to `linux/amd64`.
 
 **Runtime stage** — `alpine:3.24` with `ca-certificates`, `tzdata`, and `wget`, running as the
-non-root user `gochat` (UID 1000). Entry point is `/app/gochat`. The health check runs
+non-root user `blip` (UID 1000). Entry point is `/app/blip`. The health check runs
 `wget --spider` against `/` every 30 seconds after a 5-second grace period.
 
 The Compose service additionally runs with a read-only root filesystem, all capabilities dropped, and
@@ -83,7 +83,7 @@ Do not publish 8080 to the internet. Expose it only to the proxy:
 
 ```yaml
 services:
-  gochat:
+  blip:
     build: .
     expose:
       - "8080"          # container network only, no host port
@@ -103,9 +103,9 @@ is in [Deploying to production](deploying-to-production.md).
 ## Operations
 
 ```bash
-docker compose restart gochat
-docker inspect --format='{{.State.Health.Status}}' gochat-server
-docker exec -it gochat-server /bin/sh
+docker compose restart blip
+docker inspect --format='{{.State.Health.Status}}' blip-server
+docker exec -it blip-server /bin/sh
 ```
 
 The container writes plain-text logs to stdout with no log levels, so ship them straight to your log

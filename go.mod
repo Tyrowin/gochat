@@ -1,4 +1,4 @@
-module github.com/maltemindedal/gochat
+module github.com/maltemindedal/blip
 
 go 1.26.5
 

@@ -1,4 +1,4 @@
-// Package server constructs and starts the GoChat HTTP service with helpers
+// Package server constructs and starts the Blip HTTP service with helpers
 // that apply sensible production defaults.
 package server
 

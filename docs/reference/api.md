@@ -36,7 +36,7 @@ closed immediately.
 | Methods  | any |
 | Status   | `200 OK` |
 | `Content-Type` | `text/plain` |
-| Body     | `GoChat server is running!` |
+| Body     | `Blip server is running!` |
 
 `/` is registered as the `ServeMux` catch-all, so **every unmatched path returns this response**,
 not a 404. The Docker and Compose health checks poll this endpoint.
