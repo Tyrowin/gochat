@@ -10,7 +10,7 @@ on:
     branches: [main, develop]
 
 env:
-  GO_VERSION: "1.25.9"
+  GO_VERSION: "1.25.12"
 
 jobs:
   # Job 1: Build and Test
@@ -166,7 +166,7 @@ jobs:
           # Create a simple Dockerfile for scanning if it doesn't exist
           if [ ! -f Dockerfile ]; then
             cat > Dockerfile << EOF
-          FROM golang:1.25.9-alpine AS builder
+          FROM golang:1.25.12-alpine AS builder
           WORKDIR /app
           COPY go.mod ./
           COPY go.su[m] ./
