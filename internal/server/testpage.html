@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>GoChat WebSocket Test</title>
+    <style>
+        :root { color-scheme: light dark; }
+        body {
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            margin: 0 auto;
+            max-width: 46rem;
+            padding: 1.5rem;
+            line-height: 1.5;
+        }
+        #messages {
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            height: 20rem;
+            padding: 0.75rem;
+            overflow-y: auto;
+            margin: 0.75rem 0;
+            background-color: Canvas;
+        }
+        #messages div { margin: 0.25rem 0; }
+        .controls { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+        input[type="text"] {
+            flex: 1 1 18rem;
+            padding: 0.4rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 0.4rem 1rem;
+            background-color: #007cba;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover:enabled { background-color: #005a87; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .status { margin: 0.75rem 0; padding: 0.4rem 0.6rem; border-radius: 4px; }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+        .sent { color: #1a4fa0; }
+        .received { color: #1c6b32; }
+        .info { color: #666; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>GoChat WebSocket Test</h1>
+
+    <div id="status" class="status disconnected">Disconnected</div>
+
+    <div class="controls">
+        <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+        <button id="sendButton" disabled>Send</button>
+        <button id="connectButton">Connect</button>
+    </div>
+
+    <div id="messages" aria-live="polite"></div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const connectButton = document.getElementById('connectButton');
+        const statusDiv = document.getElementById('status');
+
+        let ws = null;
+
+        // Derive the endpoint from the current page so the test client works
+        // behind any host, port, or TLS terminator.
+        const endpoint = () =>
+            (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+
+        function addMessage(text, type = 'info') {
+            const el = document.createElement('div');
+            el.className = type;
+            const label = type === 'sent' ? 'You: ' : type === 'received' ? 'Other: ' : '';
+            el.textContent = label + text;
+            messagesDiv.appendChild(el);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateStatus(connected) {
+            statusDiv.textContent = connected ? 'Connected' : 'Disconnected';
+            statusDiv.className = 'status ' + (connected ? 'connected' : 'disconnected');
+            messageInput.disabled = !connected;
+            sendButton.disabled = !connected;
+            connectButton.textContent = connected ? 'Disconnect' : 'Connect';
+        }
+
+        function connect() {
+            ws = new WebSocket(endpoint());
+
+            ws.onopen = () => {
+                addMessage('Connected to GoChat server');
+                updateStatus(true);
+            };
+
+            ws.onmessage = (event) => {
+                for (const line of event.data.split('\n')) {
+                    try {
+                        addMessage(JSON.parse(line).content, 'received');
+                    } catch {
+                        addMessage(line, 'received');
+                    }
+                }
+            };
+
+            ws.onclose = () => {
+                addMessage('Connection closed');
+                updateStatus(false);
+                ws = null;
+            };
+
+            ws.onerror = () => addMessage('Connection error');
+        }
+
+        function sendMessage() {
+            const content = messageInput.value.trim();
+            if (!content || !ws || ws.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            ws.send(JSON.stringify({ content }));
+            addMessage(content, 'sent');
+            messageInput.value = '';
+        }
+
+        connectButton.addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+            } else {
+                connect();
+            }
+        });
+
+        sendButton.addEventListener('click', sendMessage);
+
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>

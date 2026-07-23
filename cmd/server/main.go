@@ -18,8 +18,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,82 +30,88 @@ import (
 	"github.com/maltemindedal/gochat/internal/server"
 )
 
+// Shutdown budget: the HTTP server and the hub each get half of the total.
+const (
+	shutdownTimeout = 30 * time.Second
+	stageTimeout    = shutdownTimeout / 2
+)
+
+// Build information, injected at link time with -ldflags. See the build
+// targets in the Makefile and Dockerfile.
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildTime = "unknown"
+)
+
 func main() {
-	fmt.Println("Starting GoChat server...")
+	if err := run(); err != nil {
+		slog.Error("server exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	logger := server.NewLogger(server.LogLevelFromEnv())
+	slog.SetDefault(logger)
+	server.SetLogger(logger)
+
+	logger.Info("starting GoChat server",
+		"version", Version, "commit", Commit, "build_time", BuildTime)
 
 	config := server.NewConfigFromEnv()
 	server.SetConfig(config)
 	server.StartHub()
-	mux := server.SetupRoutes()
-	httpServer := server.CreateServer(config.Port, mux)
 
-	// Channel to listen for errors coming from the HTTP server
+	httpServer := server.CreateServer(config.Port, server.SetupRoutes())
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	serverErrors := make(chan error, 1)
-
-	// Start HTTP server in a goroutine
 	go func() {
-		log.Printf("Server starting on port %s", config.Port)
-		if err := server.StartServer(httpServer); err != nil {
-			serverErrors <- err
-		}
+		serverErrors <- server.StartServer(httpServer)
 	}()
 
-	// Channel to listen for OS interrupt signals
-	shutdown := make(chan os.Signal, 1)
-	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
-	defer signal.Stop(shutdown)
-
-	// Block until we receive a signal or an error
 	select {
 	case err := <-serverErrors:
-		log.Fatalf("Server error: %v", err)
+		if err != nil {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
 
-	case sig := <-shutdown:
-		log.Printf("Received shutdown signal: %v", sig)
+	case <-ctx.Done():
+		// Stop intercepting signals so a second interrupt terminates immediately
+		// instead of waiting out the shutdown budget.
+		stop()
+		logger.Info("shutdown signal received; draining connections")
 
-		// Initiate graceful shutdown
 		if err := gracefulShutdown(httpServer); err != nil {
-			log.Fatalf("Graceful shutdown failed: %v", err)
+			return fmt.Errorf("graceful shutdown: %w", err)
 		}
 
-		log.Println("Server stopped gracefully")
+		logger.Info("server stopped gracefully")
+		return nil
 	}
 }
 
-// gracefulShutdown performs orderly shutdown of the server components
+// gracefulShutdown stops accepting new connections and then drains the hub,
+// giving up once the overall shutdown budget is exhausted.
 func gracefulShutdown(httpServer *http.Server) error {
-	// Define shutdown timeout
-	const shutdownTimeout = 30 * time.Second
-
-	// Create a context with timeout for the entire shutdown process
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	// Channel to track shutdown completion
-	shutdownComplete := make(chan error, 1)
-
+	complete := make(chan error, 1)
 	go func() {
-		// Step 1: Stop accepting new HTTP connections
-		log.Println("Step 1: Stopping HTTP server...")
-		if err := server.ShutdownServer(httpServer, 15*time.Second); err != nil {
-			shutdownComplete <- fmt.Errorf("HTTP server shutdown error: %w", err)
-			return
-		}
-
-		// Step 2: Shutdown the hub (closes all WebSocket connections)
-		log.Println("Step 2: Shutting down WebSocket hub...")
-		hub := server.GetHub()
-		if err := hub.Shutdown(15 * time.Second); err != nil {
-			shutdownComplete <- fmt.Errorf("hub shutdown error: %w", err)
-			return
-		}
-
-		shutdownComplete <- nil
+		// The HTTP server must stop accepting connections before the hub drains,
+		// so these run in sequence and their failures are reported together.
+		httpErr := server.ShutdownServer(httpServer, stageTimeout)
+		hubErr := server.GetHub().Shutdown(stageTimeout)
+		complete <- errors.Join(httpErr, hubErr)
 	}()
 
-	// Wait for shutdown to complete or timeout
 	select {
-	case err := <-shutdownComplete:
+	case err := <-complete:
 		return err
 	case <-ctx.Done():
 		return fmt.Errorf("shutdown timeout exceeded: %w", ctx.Err())

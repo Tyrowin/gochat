@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,7 +99,7 @@ func TestMultipleClientsEdgeCases(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(numClients)
 
-		for i := 0; i < numClients; i++ {
+		for i := range numClients {
 			go func(clientID int) {
 				defer wg.Done()
 				if err := connections[clientID].Close(); err != nil {
@@ -130,10 +131,7 @@ func TestMultipleClientsEdgeCases(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 
 		// Send a long message (but within size limit)
-		longContent := ""
-		for i := 0; i < 50; i++ {
-			longContent += "X"
-		}
+		longContent := strings.Repeat("X", 50)
 
 		sendMessageFromClient(t, connections[0], longContent)
 		verifyClientReceivesMessage(t, connections[1], longContent, 1)
@@ -158,6 +156,8 @@ func drainMessages(conn *websocket.Conn, timeout time.Duration) {
 // testFiveClientsSendingAndReceiving tests that five clients can send messages
 // and all other clients receive them correctly.
 func testFiveClientsSendingAndReceiving(t *testing.T, wsURL, serverURL string) {
+	t.Helper()
+
 	const numClients = 5
 	connections := connectMultipleClients(t, wsURL, serverURL, numClients)
 	defer closeAllConnections(t, connections)
@@ -177,7 +177,9 @@ func testFiveClientsSendingAndReceiving(t *testing.T, wsURL, serverURL string) {
 
 // sendMessagesFromAllClients sends one message from each client
 func sendMessagesFromAllClients(t *testing.T, connections []*websocket.Conn, numClients int) {
-	for i := 0; i < numClients; i++ {
+	t.Helper()
+
+	for i := range numClients {
 		messageContent := fmt.Sprintf(msgFromClientTemplate, i)
 		sendMessageFromClient(t, connections[i], messageContent)
 		time.Sleep(100 * time.Millisecond)
@@ -186,9 +188,11 @@ func sendMessagesFromAllClients(t *testing.T, connections []*websocket.Conn, num
 
 // verifyAllClientsReceivedMessages verifies each client received expected messages
 func verifyAllClientsReceivedMessages(t *testing.T, connections []*websocket.Conn, numClients int) {
+	t.Helper()
+
 	expectedMessagesPerClient := numClients - 1
 
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		messagesReceived := readAllMessagesFromClient(t, connections[i], expectedMessagesPerClient, i)
 		verifyReceivedMessageCount(t, messagesReceived, expectedMessagesPerClient, i)
 		verifyDidNotReceiveOwnMessage(t, messagesReceived, i)
@@ -197,6 +201,8 @@ func verifyAllClientsReceivedMessages(t *testing.T, connections []*websocket.Con
 
 // readAllMessagesFromClient reads all available messages for a client
 func readAllMessagesFromClient(t *testing.T, conn *websocket.Conn, expectedCount, clientIndex int) map[string]bool {
+	t.Helper()
+
 	messagesReceived := make(map[string]bool)
 	deadline := time.Now().Add(2 * time.Second)
 
@@ -215,6 +221,8 @@ func readAllMessagesFromClient(t *testing.T, conn *websocket.Conn, expectedCount
 
 // readSingleWebSocketMessage reads one WebSocket message and returns all contained messages
 func readSingleWebSocketMessage(t *testing.T, conn *websocket.Conn, clientIndex int) []string {
+	t.Helper()
+
 	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
 		t.Errorf("Client %d: Failed to set read deadline: %v", clientIndex, err)
 		return nil
@@ -252,6 +260,8 @@ func parseMessageContent(message []byte) []string {
 
 // verifyReceivedMessageCount checks if the client received the expected number of messages
 func verifyReceivedMessageCount(t *testing.T, messagesReceived map[string]bool, expected, clientIndex int) {
+	t.Helper()
+
 	if len(messagesReceived) != expected {
 		t.Errorf("Client %d: Expected %d messages, got %d", clientIndex, expected, len(messagesReceived))
 	}
@@ -259,6 +269,8 @@ func verifyReceivedMessageCount(t *testing.T, messagesReceived map[string]bool, 
 
 // verifyDidNotReceiveOwnMessage checks that a client didn't receive its own message
 func verifyDidNotReceiveOwnMessage(t *testing.T, messagesReceived map[string]bool, clientIndex int) {
+	t.Helper()
+
 	ownMessage := fmt.Sprintf(msgFromClientTemplate, clientIndex)
 	if messagesReceived[ownMessage] {
 		t.Errorf("Client %d received its own message", clientIndex)
@@ -268,6 +280,8 @@ func verifyDidNotReceiveOwnMessage(t *testing.T, messagesReceived map[string]boo
 // testDynamicJoiningAndLeaving tests clients connecting and disconnecting
 // dynamically while messages are being sent.
 func testDynamicJoiningAndLeaving(t *testing.T, wsURL, serverURL string) {
+	t.Helper()
+
 	// Start with 3 clients
 	connections := connectMultipleClients(t, wsURL, serverURL, 3)
 	time.Sleep(200 * time.Millisecond) // Wait for registration and pump startup
@@ -326,6 +340,8 @@ func verifyClientReceivesMessageFlexible(t *testing.T, conn *websocket.Conn, exp
 
 // handlePanicDuringMessageRead recovers from panics during WebSocket reads
 func handlePanicDuringMessageRead(t *testing.T, clientIndex int) {
+	t.Helper()
+
 	if r := recover(); r != nil {
 		t.Errorf("Client %d: Panic while reading message: %v", clientIndex, r)
 	}
@@ -333,6 +349,8 @@ func handlePanicDuringMessageRead(t *testing.T, clientIndex int) {
 
 // searchForMessageWithRetry searches for expected message content with retry logic
 func searchForMessageWithRetry(t *testing.T, conn *websocket.Conn, expectedContent string, clientIndex int, deadline time.Time) bool {
+	t.Helper()
+
 	for time.Now().Before(deadline) {
 		message, err := readWebSocketMessageWithTimeout(t, conn, clientIndex)
 		if err != nil {
@@ -357,6 +375,8 @@ func searchForMessageWithRetry(t *testing.T, conn *websocket.Conn, expectedConte
 
 // readWebSocketMessageWithTimeout reads a WebSocket message with a timeout
 func readWebSocketMessageWithTimeout(t *testing.T, conn *websocket.Conn, clientIndex int) ([]byte, error) {
+	t.Helper()
+
 	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
 		t.Errorf("Client %d: Failed to set read deadline: %v", clientIndex, err)
 		return nil, err
@@ -405,6 +425,8 @@ func messageContainsExpectedContent(message []byte, expectedContent string) bool
 // testRapidMessageExchange tests multiple clients sending messages rapidly
 // and verifies all messages are received correctly.
 func testRapidMessageExchange(t *testing.T, wsURL, serverURL string) {
+	t.Helper()
+
 	const numClients = 3
 	connections := connectMultipleClients(t, wsURL, serverURL, numClients)
 	defer closeAllConnections(t, connections)
@@ -423,7 +445,7 @@ func testRapidMessageExchange(t *testing.T, wsURL, serverURL string) {
 	// Verify all clients received the expected number of messages (allow some tolerance for timing)
 	expectedMessagesPerClient := messagesPerClient * (numClients - 1)
 
-	for clientID := 0; clientID < numClients; clientID++ {
+	for clientID := range numClients {
 		receivedCount := countReceivedMessages(t, connections[clientID], expectedMessagesPerClient)
 
 		// Allow a small tolerance (e.g., at least 80% of messages should be received)
@@ -442,9 +464,11 @@ func testRapidMessageExchange(t *testing.T, wsURL, serverURL string) {
 
 // sendRapidMessages sends multiple messages rapidly from each client.
 func sendRapidMessages(t *testing.T, connections []*websocket.Conn, messagesPerClient int) {
+	t.Helper()
+
 	numClients := len(connections)
-	for round := 0; round < messagesPerClient; round++ {
-		for clientID := 0; clientID < numClients; clientID++ {
+	for round := range messagesPerClient {
+		for clientID := range numClients {
 			content := fmt.Sprintf("Round %d from client %d", round, clientID)
 			sendMessageFromClient(t, connections[clientID], content)
 		}
@@ -456,6 +480,8 @@ func sendRapidMessages(t *testing.T, connections []*websocket.Conn, messagesPerC
 // countReceivedMessages counts how many valid messages a client receives
 // within a timeout period. Handles batched messages separated by newlines.
 func countReceivedMessages(t *testing.T, conn *websocket.Conn, maxExpected int) int {
+	t.Helper()
+
 	receivedCount := 0
 	deadline := time.Now().Add(5 * time.Second)
 
@@ -475,6 +501,8 @@ func countReceivedMessages(t *testing.T, conn *websocket.Conn, maxExpected int) 
 
 // readSingleMessageWithDeadline reads a single WebSocket message with a deadline
 func readSingleMessageWithDeadline(t *testing.T, conn *websocket.Conn) ([]byte, error) {
+	t.Helper()
+
 	if err := conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
 		t.Logf("Failed to set read deadline: %v", err)
 		return nil, err
@@ -513,6 +541,8 @@ func countMessagesInBatch(message []byte) int {
 
 // closeClientConnection safely closes a client connection at the given index.
 func closeClientConnection(t *testing.T, connections []*websocket.Conn, index int) {
+	t.Helper()
+
 	if err := connections[index].Close(); err != nil {
 		t.Errorf("Failed to close client %d: %v", index, err)
 	}
@@ -521,6 +551,8 @@ func closeClientConnection(t *testing.T, connections []*websocket.Conn, index in
 
 // closeRemainingConnections closes all non-nil connections in the slice.
 func closeRemainingConnections(t *testing.T, connections []*websocket.Conn) {
+	t.Helper()
+
 	for i, conn := range connections {
 		if conn != nil {
 			if err := conn.Close(); err != nil {
@@ -532,6 +564,8 @@ func closeRemainingConnections(t *testing.T, connections []*websocket.Conn) {
 
 // connectNewClient establishes a new WebSocket connection and returns it.
 func connectNewClient(t *testing.T, wsURL, serverURL string) *websocket.Conn {
+	t.Helper()
+
 	newClient, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
 	if err != nil {
 		t.Fatalf("Failed to connect new client: %v", err)
@@ -543,12 +577,14 @@ func connectNewClient(t *testing.T, wsURL, serverURL string) *websocket.Conn {
 // testConcurrentConnectionsAndDisconnections tests multiple clients connecting
 // and disconnecting concurrently.
 func testConcurrentConnectionsAndDisconnections(t *testing.T, wsURL, serverURL string) {
+	t.Helper()
+
 	const numClients = 10
 	var wg sync.WaitGroup
 	errors := make(chan error, numClients)
 
 	wg.Add(numClients)
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		go runSingleConcurrentClient(t, wsURL, serverURL, i, &wg, errors)
 	}
 
@@ -561,6 +597,8 @@ func testConcurrentConnectionsAndDisconnections(t *testing.T, wsURL, serverURL s
 // runSingleConcurrentClient connects a single client, sends a message, reads responses,
 // and disconnects.
 func runSingleConcurrentClient(t *testing.T, wsURL, serverURL string, clientID int, wg *sync.WaitGroup, errors chan<- error) {
+	t.Helper()
+
 	defer wg.Done()
 
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
@@ -599,6 +637,8 @@ func attemptToReadMessages(conn *websocket.Conn, timeout time.Duration) {
 
 // testConcurrentMessageSending tests multiple clients sending messages concurrently.
 func testConcurrentMessageSending(t *testing.T, wsURL, serverURL string) {
+	t.Helper()
+
 	const numClients = 5
 	connections := connectMultipleClients(t, wsURL, serverURL, numClients)
 	defer closeAllConnections(t, connections)
@@ -614,6 +654,8 @@ func testConcurrentMessageSending(t *testing.T, wsURL, serverURL string) {
 // sendMessagesFromAllClientsConcurrently sends multiple messages from each client
 // concurrently and returns any errors that occurred.
 func sendMessagesFromAllClientsConcurrently(t *testing.T, connections []*websocket.Conn) chan error {
+	t.Helper()
+
 	const messagesPerClient = 10
 	numClients := len(connections)
 
@@ -621,7 +663,7 @@ func sendMessagesFromAllClientsConcurrently(t *testing.T, connections []*websock
 	errors := make(chan error, numClients*messagesPerClient)
 
 	// Each client sends 10 messages concurrently
-	for i := 0; i < numClients; i++ {
+	for i := range numClients {
 		wg.Add(1)
 		go sendMultipleMessagesFromClient(t, connections[i], i, messagesPerClient, &wg, errors)
 	}
@@ -634,9 +676,11 @@ func sendMessagesFromAllClientsConcurrently(t *testing.T, connections []*websock
 
 // sendMultipleMessagesFromClient sends multiple messages from a single client.
 func sendMultipleMessagesFromClient(t *testing.T, conn *websocket.Conn, clientID, numMessages int, wg *sync.WaitGroup, errors chan<- error) {
+	t.Helper()
+
 	defer wg.Done()
 
-	for msgNum := 0; msgNum < numMessages; msgNum++ {
+	for msgNum := range numMessages {
 		content := fmt.Sprintf("Client %d message %d", clientID, msgNum)
 		if err := conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
 			errors <- fmt.Errorf("client %d msg %d: send failed: %w", clientID, msgNum, err)
@@ -648,13 +692,15 @@ func sendMultipleMessagesFromClient(t *testing.T, conn *websocket.Conn, clientID
 // drainAllClientMessages drains messages from all client connections.
 func drainAllClientMessages(connections []*websocket.Conn) {
 	time.Sleep(500 * time.Millisecond)
-	for i := 0; i < len(connections); i++ {
+	for i := range connections {
 		drainMessages(connections[i], 1*time.Second)
 	}
 }
 
 // reportErrors reports all errors from the error channel to the test.
 func reportErrors(t *testing.T, errors <-chan error) {
+	t.Helper()
+
 	for err := range errors {
 		t.Error(err)
 	}

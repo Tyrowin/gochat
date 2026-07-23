@@ -412,7 +412,7 @@ func testMultipleSmallMessages(t *testing.T, wsURL, serverURL string) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Send multiple small messages
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		content := strings.Repeat("A", 20)
 		if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
 			t.Errorf(errFailedSendMessage, i, err)
@@ -564,7 +564,7 @@ func testValidOriginWithSizeAndRateLimits(t *testing.T, wsURL, serverURL string)
 	time.Sleep(50 * time.Millisecond)
 
 	// Send messages up to rate limit
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "msg")); err != nil {
 			t.Errorf(errFailedSendMessage, i, err)
 		}

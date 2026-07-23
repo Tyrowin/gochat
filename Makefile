@@ -9,7 +9,7 @@ SHELL := pwsh.exe
 .SHELLFLAGS := -NoProfile -Command
 endif
 
-.PHONY: help build clean test test-coverage lint lint-fix security-scan deps-check deps-update run dev fmt vet all ci-local install-tools docker-build docker-run
+.PHONY: help build build-raw clean test test-unit test-integration test-coverage test-coverage-unit test-coverage-integration lint lint-fix security-scan deps-check deps-update deps-graph license-check bench race docs run dev fmt vet all ci-local install-tools docker-build docker-run build-linux build-linux-arm64 build-darwin build-darwin-arm64 build-windows build-windows-arm64 build-all
 
 # Default target
 .DEFAULT_GOAL := help
@@ -109,7 +109,7 @@ test-integration:
 ## test-coverage: Run tests with coverage report
 test-coverage:
 	@echo "Running tests with coverage..."
-	go test -v -race -coverpkg=./cmd/...,./internal/... -coverprofile=$(COVERAGE_FILE) ./test/...
+	go test -race -coverpkg=./cmd/...,./internal/... -coverprofile=$(COVERAGE_FILE) ./...
 	go tool cover -html=$(COVERAGE_FILE) -o $(COVERAGE_HTML)
 	@echo "Coverage report generated: $(COVERAGE_HTML)"
 	go tool cover -func=$(COVERAGE_FILE)
@@ -200,7 +200,7 @@ ci-local: clean fmt vet lint test-coverage security-scan deps-check build
 ## install-tools: Install development tools
 install-tools:
 	@echo "Installing development tools..."
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
 	go install golang.org/x/vuln/cmd/govulncheck@latest
 	go install github.com/securego/gosec/v2/cmd/gosec@latest
 	go install golang.org/x/tools/cmd/goimports@latest

@@ -14,7 +14,7 @@ real-time relay behind your own application, or as a starting point to build on.
 
 ## Quick start
 
-Requires **Go 1.25.12 or later** (`go version`) and Git. GNU Make is optional.
+Requires **Go 1.26.5 or later** (`go version`) and Git. GNU Make is optional.
 
 ```bash
 git clone https://github.com/maltemindedal/gochat.git
@@ -25,11 +25,13 @@ make build            # or: go build -o bin/gochat ./cmd/server
 ```
 
 ```
-Starting GoChat server...
-2026/07/23 15:14:04 Hub started and ready to manage WebSocket connections
-2026/07/23 15:14:04 Server starting on port :8080
-2026/07/23 15:14:04 Server listening on :8080
+time=2026-07-23T15:51:57.081+02:00 level=INFO msg="starting GoChat server" version=dev commit=unknown build_time=unknown
+time=2026-07-23T15:51:57.081+02:00 level=INFO msg="hub started and ready to manage WebSocket connections"
+time=2026-07-23T15:51:57.082+02:00 level=INFO msg="server listening" addr=:8080
 ```
+
+Logs are structured key-value records via `log/slog`; set `LOG_LEVEL=debug` to trace individual
+messages.
 
 Open <http://localhost:8080/test> in two browser tabs, click **Connect** in each, and type. Messages
 go to the other tab — senders do not receive their own messages.
@@ -59,6 +61,7 @@ SERVER_PORT=:8080 \
 ALLOWED_ORIGINS=http://localhost:8080,http://localhost:3000 \
 MAX_MESSAGE_SIZE=512 \
 RATE_LIMIT_BURST=5 \
+LOG_LEVEL=info \
 ./bin/gochat
 ```
 
@@ -101,7 +104,11 @@ instances behind a load balancer form separate chat rooms — see
 [scaling](docs/guides/deploying-to-production.md#scaling). There is no built-in authentication;
 enforce it in front of `/ws` if your data needs it.
 
-Test coverage was 71.0% of statements as of 2026-07-23 (`make test-coverage`).
+Test coverage was 66.9% of statements as of 2026-07-23 (`make test-coverage`). Broadcast fan-out and
+rate limiting are allocation-free per message, and the origin check is allocation-free per
+handshake — see
+[performance](docs/architecture/overview.md#performance) for the numbers and `make bench` to
+reproduce them.
 
 ## Contributing
 

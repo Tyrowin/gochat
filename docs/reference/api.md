@@ -47,12 +47,12 @@ not a 404. The Docker and Compose health checks poll this endpoint.
 | -------- | ----- |
 | Methods  | any |
 | Status   | `200 OK` |
-| `Content-Type` | `text/html` |
+| `Content-Type` | `text/html; charset=utf-8` |
 
-A self-contained HTML page with connect/disconnect controls and a message log, served from a string
-literal in `internal/server/handlers.go`. Its JavaScript dials the hard-coded URL
-`ws://localhost:8080/ws`, so the page only works when reached at `http://localhost:8080/test`. It is
-a development aid — there is no flag to disable it, so block `/test` at the reverse proxy in
+A self-contained HTML page with connect/disconnect controls and a message log, compiled into the
+binary from `internal/server/testpage.html` with `go:embed`. Its JavaScript derives the WebSocket URL
+from `location`, so the page works at whatever host, port, or TLS terminator it is reached through.
+It is a development aid — there is no flag to disable it, so block `/test` at the reverse proxy in
 production.
 
 ## Message protocol
@@ -73,8 +73,11 @@ sends application-level errors — failures are visible only as a dropped messag
 ### Delivery semantics
 
 1. A client sends a JSON frame.
-2. The server decodes it into `Message`, then **re-encodes it** before broadcasting. Unknown fields
-   are discarded; a payload with no `content` field is relayed as `{"content":""}`.
+2. The server **normalizes it** to exactly `{"content":...}` before broadcasting. Unknown fields are
+   discarded; a payload with no `content` field is relayed as `{"content":""}`. Characters that
+   `encoding/json` escapes stay escaped on the way out, so the characters `<`, `>`, and `&` arrive
+   as the six-character sequences `\u003c`, `\u003e`, and `\u0026`. That is JSON
+   transport encoding, not sanitization: a client rendering the text must still escape on output.
 3. The message is fanned out to every other connected client. **The sender does not receive its own
    message.**
 4. Nothing is persisted. A client that connects later sees no history.

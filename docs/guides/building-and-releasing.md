@@ -74,17 +74,15 @@ Verify with `sha256sum -c checksums.txt` (`shasum -a 256 -c` on macOS).
 
 ### Version stamping
 
-The Makefile passes `-X main.Version`, `-X main.Commit`, and `-X main.BuildTime`. The `main` package
-does not declare those variables today, so the values go nowhere. Declaring them would make the
-stamps take effect:
+The Makefile passes `-X main.Version`, `-X main.Commit`, and `-X main.BuildTime`, which `main`
+declares and logs in its first record at startup:
 
-```go
-var (
-	Version   = "dev"
-	Commit    = "unknown"
-	BuildTime = "unknown"
-)
 ```
+level=INFO msg="starting GoChat server" version=v1.2.0 commit=48ab334 build_time=2026-07-23T13:51:57Z
+```
+
+The `Dockerfile` stamps `main.Version` only, from its `VERSION` build argument
+(`docker build --build-arg VERSION=v1.2.0 .`).
 
 On non-Windows hosts the values come from `git describe --tags --always --dirty` and
 `git rev-parse --short HEAD`; on Windows the Makefile defaults them to `dev`/`unknown` and stamps
@@ -98,7 +96,7 @@ make docker-build             # tags gochat:$(VERSION) and gochat:latest
 ```
 
 The multi-stage `Dockerfile` compiles with the same static/stripped flags and copies the binary into
-`alpine:3.20`. Details in [Running with Docker](running-with-docker.md).
+`alpine:3.24`. Details in [Running with Docker](running-with-docker.md).
 
 Multi-architecture images need buildx:
 
@@ -107,8 +105,8 @@ docker buildx create --use
 docker buildx build --platform linux/amd64,linux/arm64 -t gochat:latest --push .
 ```
 
-Note that the `Dockerfile` hard-codes `GOARCH=amd64` in the build stage, so a multi-arch build
-produces amd64 binaries in every manifest entry until that line honors `TARGETARCH`.
+The build stage reads buildx's `TARGETOS` and `TARGETARCH` build arguments, so each manifest entry
+gets a binary for its own platform. Both default to `linux/amd64` for a plain `docker build`.
 
 ## Troubleshooting
 

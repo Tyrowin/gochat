@@ -231,15 +231,26 @@ curl -fsS https://chat.example.com/ || echo "unhealthy"
 ```
 
 It confirms only that the HTTP listener answers — it reports nothing about hub state or connection
-count. The server exposes **no metrics endpoint**, so operational visibility comes from the logs,
-which are unstructured plain text on stdout. Useful lines to alert on:
+count. The server exposes **no metrics endpoint**, so operational visibility comes from the logs. They are
+`log/slog` key-value records written to **stderr**, at the level set by `LOG_LEVEL` (default `info`):
 
-| Log line                                 | Meaning                                        |
-| ---------------------------------------- | ---------------------------------------------- |
-| `Blocked WebSocket connection from disallowed origin` | Misconfigured `ALLOWED_ORIGINS` or an attack |
-| `Rate limit exceeded for ...`            | A client is flooding                            |
-| `Client from ... removed due to full send buffer` | A slow consumer was dropped            |
-| `Hub shutdown timeout reached`           | Shutdown did not drain within its budget        |
+```
+time=2026-07-23T15:51:57.081+02:00 level=INFO msg="client registered" addr=[::1]:65503 total_clients=1
+```
+
+Messages to alert on:
+
+| `msg`                                            | Level | Meaning                                      |
+| ------------------------------------------------ | ----- | -------------------------------------------- |
+| `blocked WebSocket connection from disallowed origin` | WARN | Misconfigured `ALLOWED_ORIGINS` or an attack |
+| `rate limit exceeded; discarding message`        | WARN  | A client is flooding                          |
+| `dropping client with a full send buffer`        | WARN  | A slow consumer was dropped                   |
+| `hub shutdown timed out...`                      | ERROR | Shutdown did not drain within its budget      |
+
+`client registered` and `client unregistered` carry `total_clients`, which is the closest thing to a
+connection-count gauge. Do not run production at `LOG_LEVEL=debug`: it logs every inbound message and
+every broadcast, which is both a throughput cost and a privacy exposure, since message bodies end up
+in the log.
 
 ## Scaling
 

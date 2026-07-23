@@ -3,12 +3,21 @@
 package server
 
 import (
-	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
+)
+
+// Default configuration values applied when a setting is unset or invalid.
+const (
+	defaultPort            = ":8080"
+	defaultMaxMessageSize  = 512
+	defaultRateLimitBurst  = 5
+	defaultRateLimitRefill = time.Second
+	defaultAllowedOrigin   = "http://localhost:8080"
 )
 
 // RateLimitConfig defines the parameters for per-connection message rate limiting.
@@ -25,12 +34,16 @@ type Config struct {
 	RateLimit      RateLimitConfig
 }
 
-var (
-	configMu        sync.RWMutex
-	activeConfig    Config
-	allowedOrigins  map[string]struct{}
-	allowAllOrigins bool
-)
+// configSnapshot is an immutable, fully resolved view of the configuration.
+// It is published atomically so hot paths (origin checks, client construction)
+// can read it without locking.
+type configSnapshot struct {
+	cfg      Config
+	origins  map[string]struct{}
+	allowAll bool
+}
+
+var activeConfig atomic.Pointer[configSnapshot]
 
 func init() {
 	SetConfig(nil)
@@ -38,80 +51,72 @@ func init() {
 
 func defaultConfig() Config {
 	return Config{
-		Port: ":8080",
-		AllowedOrigins: []string{
-			"http://localhost:8080",
-		},
-		MaxMessageSize: 512,
+		Port:           defaultPort,
+		AllowedOrigins: []string{defaultAllowedOrigin},
+		MaxMessageSize: defaultMaxMessageSize,
 		RateLimit: RateLimitConfig{
-			Burst:          5,
-			RefillInterval: time.Second,
+			Burst:          defaultRateLimitBurst,
+			RefillInterval: defaultRateLimitRefill,
 		},
 	}
 }
 
-func sanitizeConfig(cfg Config) Config {
-	if cfg.Port == "" {
-		cfg.Port = ":8080"
-	} else if !strings.Contains(cfg.Port, ":") {
+// newConfigSnapshot substitutes defaults for invalid values and resolves the
+// origin allow-list into a lookup set, returning the snapshot to publish.
+func newConfigSnapshot(cfg Config) *configSnapshot {
+	switch {
+	case cfg.Port == "":
+		cfg.Port = defaultPort
+	case !strings.Contains(cfg.Port, ":"):
 		cfg.Port = ":" + cfg.Port
 	}
 
 	if cfg.MaxMessageSize <= 0 {
-		cfg.MaxMessageSize = 512
+		cfg.MaxMessageSize = defaultMaxMessageSize
 	}
 
 	if cfg.RateLimit.Burst <= 0 {
-		cfg.RateLimit.Burst = 5
+		cfg.RateLimit.Burst = defaultRateLimitBurst
 	}
 
 	if cfg.RateLimit.RefillInterval <= 0 {
-		cfg.RateLimit.RefillInterval = time.Second
+		cfg.RateLimit.RefillInterval = defaultRateLimitRefill
 	}
 
 	normalizedOrigins, allowAll := normalizeOrigins(cfg.AllowedOrigins)
 	cfg.AllowedOrigins = normalizedOrigins
 
-	configMu.Lock()
-	defer configMu.Unlock()
-
-	activeConfig = cfg
-	allowAllOrigins = allowAll
-	allowedOrigins = make(map[string]struct{}, len(normalizedOrigins))
+	origins := make(map[string]struct{}, len(normalizedOrigins))
 	for _, origin := range normalizedOrigins {
-		allowedOrigins[origin] = struct{}{}
+		origins[origin] = struct{}{}
 	}
 
-	return cfg
+	return &configSnapshot{cfg: cfg, origins: origins, allowAll: allowAll}
 }
 
 // SetConfig applies the provided configuration. Passing nil resets to defaults.
 func SetConfig(cfg *Config) {
 	if cfg == nil {
-		defaultCfg := defaultConfig()
-		sanitizeConfig(defaultCfg)
+		activeConfig.Store(newConfigSnapshot(defaultConfig()))
 		return
 	}
 
-	sanitized := Config{
+	activeConfig.Store(newConfigSnapshot(Config{
 		Port:           cfg.Port,
-		AllowedOrigins: append([]string(nil), cfg.AllowedOrigins...),
+		AllowedOrigins: slices.Clone(cfg.AllowedOrigins),
 		MaxMessageSize: cfg.MaxMessageSize,
-		RateLimit: RateLimitConfig{
-			Burst:          cfg.RateLimit.Burst,
-			RefillInterval: cfg.RateLimit.RefillInterval,
-		},
-	}
-	sanitizeConfig(sanitized)
+		RateLimit:      cfg.RateLimit,
+	}))
 }
 
-func currentConfig() Config {
-	configMu.RLock()
-	defer configMu.RUnlock()
+// currentSnapshot returns the active resolved configuration without copying.
+// Callers must treat the result as read-only.
+func currentSnapshot() *configSnapshot {
+	if snap := activeConfig.Load(); snap != nil {
+		return snap
+	}
 
-	cfg := activeConfig
-	cfg.AllowedOrigins = append([]string(nil), cfg.AllowedOrigins...)
-	return cfg
+	return newConfigSnapshot(defaultConfig())
 }
 
 // NewConfig creates a Config instance populated with default values for all settings.
@@ -125,40 +130,38 @@ func NewConfig() *Config {
 func NewConfigFromEnv() *Config {
 	cfg := defaultConfig()
 
-	// Load SERVER_PORT
 	if port := os.Getenv("SERVER_PORT"); port != "" {
 		cfg.Port = port
 	}
 
-	// Load ALLOWED_ORIGINS
 	if origins := os.Getenv("ALLOWED_ORIGINS"); origins != "" {
 		cfg.AllowedOrigins = parseOrigins(origins)
 	}
 
-	// Load MAX_MESSAGE_SIZE
 	if maxSize := os.Getenv("MAX_MESSAGE_SIZE"); maxSize != "" {
 		if parsedSize, ok := parseMaxMessageSize(maxSize); ok {
 			cfg.MaxMessageSize = parsedSize
 		} else {
-			log.Print("Invalid MAX_MESSAGE_SIZE provided; using default value")
+			log().Warn("invalid MAX_MESSAGE_SIZE; using default",
+				"value", maxSize, "default", cfg.MaxMessageSize)
 		}
 	}
 
-	// Load RATE_LIMIT_BURST
 	if burst := os.Getenv("RATE_LIMIT_BURST"); burst != "" {
 		if parsedBurst, ok := parseIntValue(burst); ok {
 			cfg.RateLimit.Burst = parsedBurst
 		} else {
-			log.Print("Invalid RATE_LIMIT_BURST provided; using default value")
+			log().Warn("invalid RATE_LIMIT_BURST; using default",
+				"value", burst, "default", cfg.RateLimit.Burst)
 		}
 	}
 
-	// Load RATE_LIMIT_REFILL_INTERVAL
 	if interval := os.Getenv("RATE_LIMIT_REFILL_INTERVAL"); interval != "" {
 		if parsedInterval, ok := parseRefillInterval(interval); ok {
 			cfg.RateLimit.RefillInterval = parsedInterval
 		} else {
-			log.Print("Invalid RATE_LIMIT_REFILL_INTERVAL provided; using default value")
+			log().Warn("invalid RATE_LIMIT_REFILL_INTERVAL; using default",
+				"value", interval, "default", cfg.RateLimit.RefillInterval)
 		}
 	}
 

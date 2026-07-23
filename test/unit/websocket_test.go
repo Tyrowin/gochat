@@ -80,7 +80,7 @@ func TestWebSocketHandlerMethodValidation(t *testing.T) {
 // that don't include proper WebSocket upgrade headers. It verifies that such requests
 // are rejected with a Bad Request status code.
 func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
-	req := httptest.NewRequest("GET", "/ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
 	w := httptest.NewRecorder()
 
 	server.WebSocketHandler(w, req)
@@ -97,7 +97,7 @@ func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
 // Content-Type header when rejecting invalid requests. It verifies that error responses
 // include the appropriate content type for the error message.
 func TestWebSocketHandlerContentType(t *testing.T) {
-	req := httptest.NewRequest("POST", "/ws", nil)
+	req := httptest.NewRequest(http.MethodPost, "/ws", nil)
 	w := httptest.NewRecorder()
 
 	server.WebSocketHandler(w, req)
@@ -116,7 +116,7 @@ func TestWebSocketHandlerContentType(t *testing.T) {
 // either succeeding with a protocol switch or failing with an appropriate error.
 func TestWebSocketUpgraderConfiguration(t *testing.T) {
 	// Create a GET request with proper WebSocket headers
-	req := httptest.NewRequest("GET", "/ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 	req.Header.Set("Sec-WebSocket-Version", "13")
@@ -138,7 +138,7 @@ func TestWebSocketUpgraderConfiguration(t *testing.T) {
 // It verifies that requests with proper WebSocket upgrade headers are not rejected
 // with a Method Not Allowed status, ensuring the handler recognizes valid WebSocket requests.
 func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
-	req := httptest.NewRequest("GET", "/ws", nil)
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
 
 	req.Header.Set("Connection", "upgrade")
 	req.Header.Set("Upgrade", "websocket")

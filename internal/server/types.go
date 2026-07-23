@@ -1,8 +1,15 @@
-// Package server defines shared message payload types and utility helpers that
-// are reused across client and hub logic.
+// Package server defines shared message payload types and the connection-error
+// helpers reused across client and hub logic.
 package server
 
-import "strings"
+import (
+	"errors"
+	"io"
+	"net"
+	"strings"
+
+	"github.com/gorilla/websocket"
+)
 
 // Message represents the V1 JSON message format exchanged between clients.
 type Message struct {
@@ -16,13 +23,23 @@ type BroadcastMessage struct {
 	Payload []byte
 }
 
-// isExpectedCloseError checks if an error is expected during connection closure.
+// isExpectedCloseError reports whether an error is part of normal connection
+// teardown rather than a fault worth logging.
 func isExpectedCloseError(err error) bool {
 	if err == nil {
 		return true
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "use of closed network connection") ||
-		strings.Contains(errStr, "websocket: close sent") ||
-		strings.Contains(errStr, "broken pipe")
+
+	if errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, websocket.ErrCloseSent) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrClosedPipe) {
+		return true
+	}
+
+	// Broken pipes and connection resets surface as platform-specific syscall
+	// errors that are not worth enumerating per GOOS.
+	msg := err.Error()
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer")
 }

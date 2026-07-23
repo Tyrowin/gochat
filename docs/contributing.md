@@ -5,7 +5,7 @@ and how a pull request gets reviewed.
 
 ## Development setup
 
-Prerequisites: Go 1.25.12 or later, Git, and optionally GNU Make.
+Prerequisites: Go 1.26.5 or later, Git, and optionally GNU Make.
 
 ```bash
 git clone https://github.com/maltemindedal/gochat.git
@@ -76,8 +76,16 @@ in `internal/server`:
 - **Concurrent state is guarded** — either owned by a single goroutine (as the hub's run loop owns
   the registry) or behind a mutex. Never leave a blocking send without a `case <-shutdown` escape.
 
-Linters enabled in `.golangci.yml`: `errcheck`, `govet`, `staticcheck`, `unused`, `ineffassign`,
-`gosec`, `revive`, `misspell`, `bodyclose`, `copyloopvar`, `unconvert`.
+Linters enabled in `.golangci.yml`, grouped as the file groups them:
+
+- **Correctness** — `errcheck`, `govet`, `staticcheck`, `unused`, `ineffassign`, `bodyclose`,
+  `errorlint`, `errname`, `wastedassign`, `nilerr`
+- **Security** — `gosec`
+- **Style and modernization** — `revive`, `misspell`, `unconvert`, `copyloopvar`, `intrange`,
+  `usestdlibvars`, `perfsprint`, `sloglint`, `nolintlint`
+- **Tests** — `thelper`, `usetesting`
+
+Formatting is enforced separately by the `formatters` block (`gofmt`, `goimports`).
 
 The repository also carries [`AGENTS.md`](../AGENTS.md), guidance for AI coding assistants: prefer
 the minimal change, do not refactor adjacent code, match the surrounding style.
@@ -107,20 +115,20 @@ issues. CI must be green and a maintainer must approve before merge.
 
 `.github/workflows/ci.yml` runs on pushes and pull requests targeting `main` and `develop`:
 
-| Job                | What it does                                                        |
-| ------------------ | ------------------------------------------------------------------- |
-| `build-and-test`   | `go build ./...`, `go test -race` with coverage, upload to Codecov    |
-| `lint`             | golangci-lint v2.5.0 against `.golangci.yml`                          |
-| `security-scan`    | `govulncheck ./...`                                                   |
-| `dependency-check` | Lists outdated modules; fails if `go mod tidy` produces a diff        |
-| `build-matrix`     | Builds and tests against Go 1.24.x and 1.25.x                         |
-| `docker-scan`      | Builds the image and runs Trivy (pushes to `main` only)               |
-| `quality-gate`     | Fails unless `build-and-test`, `lint`, and `security-scan` all passed |
+| Job          | What it does                                                                  |
+| ------------ | ----------------------------------------------------------------------------- |
+| `test`       | Verifies the module is tidy, builds, runs `go test -race -shuffle=on` with coverage, uploads to Codecov |
+| `bench`      | Runs every benchmark once as a compile-and-run smoke test                      |
+| `lint`       | golangci-lint v2.12.2 against `.golangci.yml`                                  |
+| `vulncheck`  | `govulncheck ./...`                                                            |
+| `docker`     | Builds the image and scans it with Trivy, uploading SARIF to the Security tab   |
 
-The Go version is pinned in the `GO_VERSION` variable at the top of the workflow. `govulncheck`
-reports vulnerabilities in the Go toolchain itself, so a stdlib advisory fails CI until that pin is
-raised — and it must be raised in `go.mod`, `.github/workflows/ci.yml` (two places), `Dockerfile`,
-and `README.md` together.
+Every job fails the run on its own, so there is no separate gate job. Runs are grouped per ref with
+`cancel-in-progress`, so pushing again supersedes a run still in flight.
+
+The Go version comes from `go.mod` via `go-version-file`, so the workflow never needs its own pin.
+`govulncheck` reports vulnerabilities in the Go toolchain itself, so a stdlib advisory fails CI until
+the toolchain is raised — and that means `go.mod`, `Dockerfile`, and `README.md` together.
 
 ## Reporting issues
 

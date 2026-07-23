@@ -15,10 +15,12 @@ Know these before exposing the server:
   [Deploying to production](deploying-to-production.md).
 - **No per-IP connection limit.** Rate limiting is per connection, so one client can open many
   connections and multiply its budget. Cap concurrent connections per IP at the proxy.
-- **No content filtering or escaping.** Message bodies are relayed verbatim. Rendering clients must
-  escape them — the built-in `/test` page inserts messages with `innerHTML` and is unsafe for
-  anything but local development.
-- **No audit trail.** Logs are unstructured plain text with no request IDs or user identity.
+- **No content filtering.** Message bodies are relayed as-is. The server re-encodes them with
+  `encoding/json`, so HTML metacharacters arrive escaped as `<`/`>`/`&`, but that is
+  a JSON transport detail, not sanitization: a rendering client must still escape on output. The
+  built-in `/test` page uses `textContent` rather than `innerHTML` for exactly this reason.
+- **No audit trail.** Logs are structured key-value records, but carry no request IDs or user
+  identity — only the remote address.
 
 ## Origin validation
 
@@ -102,11 +104,11 @@ govulncheck ./...    # known vulnerabilities in the stdlib and dependencies
 gosec ./...          # static analysis for insecure patterns
 ```
 
-CI runs `govulncheck ./...` on every push and pull request to `main` and `develop` as a required
-quality gate, `gosec` as part of golangci-lint, and Trivy against the built image on pushes to
-`main`. `govulncheck` reports vulnerabilities in the Go toolchain itself, so a stdlib advisory fails
-CI until the pinned Go version is bumped in `go.mod`, `.github/workflows/ci.yml`, the `Dockerfile`,
-and the README.
+CI runs `govulncheck ./...` on every push and pull request to `main` and `develop`, `gosec` as part
+of golangci-lint, and Trivy against the built image, uploading its findings to the repository's
+Security tab. Any of these failing fails the run. `govulncheck` reports vulnerabilities in the Go
+toolchain itself, so a stdlib advisory fails CI until the Go version is bumped in `go.mod` — which
+CI reads directly — plus the `Dockerfile` and the README.
 
 ## Production checklist
 

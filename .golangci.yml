@@ -1,4 +1,5 @@
-# .golangci.yml
+# golangci-lint configuration
+# Docs: https://golangci-lint.run/docs/configuration/file/
 version: "2"
 
 run:
@@ -6,17 +7,47 @@ run:
 
 linters:
   enable:
-    # Essential linters for code correctness and style
-    - errcheck # Checks for unchecked errors
-    - govet # Reports suspicious constructs
-    - staticcheck # A comprehensive suite of static analysis checks
-    - unused # Checks for unused constants, functions, types, and variables
-    - ineffassign # Detects ineffectual assignments
+    # Correctness
+    - errcheck # Unchecked errors
+    - govet # Suspicious constructs
+    - staticcheck # Comprehensive static analysis
+    - unused # Unused constants, functions, types, and variables
+    - ineffassign # Ineffectual assignments
+    - bodyclose # Unclosed HTTP response bodies
+    - errorlint # Error wrapping and comparison mistakes
+    - errname # Error variable and type naming
+    - wastedassign # Assignments whose value is never used
+    - nilerr # Returning nil when an error is non-nil
 
-    # Additional useful linters
-    - gosec # Security-focused linter
-    - revive # A faster, more configurable linter than golint
-    - misspell # Checks for misspelled words
-    - bodyclose # Checks for unclosed HTTP response bodies
-    - copyloopvar # Checks for loops that capture loop variables by reference
-    - unconvert # Reports unnecessary type conversions
+    # Security
+    - gosec
+
+    # Style and modernization
+    - revive # Fast, configurable style checks
+    - misspell
+    - unconvert # Unnecessary type conversions
+    - copyloopvar # Pre-1.22 loop variable copies
+    - intrange # `for i := range n` over three-clause loops
+    - usestdlibvars # Standard library constants over string literals
+    - perfsprint # Faster alternatives to fmt.Sprintf
+    - sloglint # Consistent log/slog usage
+    - nolintlint # Well-formed, justified nolint directives
+
+    # Tests
+    - thelper # t.Helper() in test helpers
+    - usetesting # Prefer t.Context, t.Chdir, t.Setenv over manual equivalents
+
+  settings:
+    sloglint:
+      # Attributes must be key-value pairs; keys are static snake_case strings.
+      kv-only: true
+      key-naming-case: snake
+      static-msg: false
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

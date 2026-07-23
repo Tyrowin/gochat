@@ -16,6 +16,7 @@ An annotated template lives in [`.env.example`](../../.env.example). The process
 | `MAX_MESSAGE_SIZE`           | integer (bytes)        | `512`                | Read limit per WebSocket message. Exceeding it closes the connection.                 |
 | `RATE_LIMIT_BURST`           | integer (messages)     | `5`                  | Token bucket capacity per connection.                                                 |
 | `RATE_LIMIT_REFILL_INTERVAL` | integer (whole seconds)| `1`                  | Time to refill the whole bucket. Sub-second values are not expressible.               |
+| `LOG_LEVEL`                  | `debug`/`info`/`warn`/`error` | `info`        | Minimum severity written to stderr. `debug` logs every message and broadcast.         |
 
 ### Validation behavior
 
@@ -23,7 +24,7 @@ Every variable is optional. Values that fail to parse do not stop the server —
 used and a line is written to the log:
 
 ```
-Invalid MAX_MESSAGE_SIZE provided; using default value
+time=2026-07-23T15:14:04.812+02:00 level=WARN msg="invalid MAX_MESSAGE_SIZE; using default" value=abc default=512
 ```
 
 Specifics:
@@ -34,6 +35,9 @@ Specifics:
   greater than zero. Zero, negatives, and non-numeric values fall back to the default.
 - `RATE_LIMIT_REFILL_INTERVAL` is parsed with `strconv.Atoi` and multiplied by `time.Second`.
   Duration strings such as `500ms` or `1s` are **invalid** and fall back to the default.
+- `LOG_LEVEL` accepts the names `log/slog` understands, case-insensitively, including offsets such
+  as `debug-2`. Anything unrecognized falls back to `info` silently, since the logger does not exist
+  yet at the point the level is read.
 
 ### Origin matching
 
@@ -43,7 +47,7 @@ Specifics:
 - The port is part of the host: `http://localhost:8080` does not match `http://localhost:3000`.
 - Paths are ignored: `https://example.com/app` is stored as `https://example.com`.
 - Entries with no scheme or no host (`example.com`, `localhost:8080`) are rejected at startup with
-  `Ignoring invalid origin in configuration: ...`.
+  an `ignoring invalid origin in configuration` warning.
 - A request with **no** `Origin` header is rejected. Browsers always send one; non-browser clients
   must set it explicitly.
 - `*` anywhere in the list allows every origin, including requests whose `Origin` is otherwise
@@ -55,13 +59,15 @@ These are compile-time constants. Changing them requires editing the source.
 
 | Value                        | Setting                    | Location                    |
 | ---------------------------- | -------------------------- | --------------------------- |
-| WebSocket read/write buffers | 1024 bytes each            | `internal/server/handlers.go` |
+| WebSocket read/write buffers | 1024 bytes each, write buffers pooled across connections | `internal/server/handlers.go` |
 | Client send queue depth      | 256 messages               | `internal/server/client.go`   |
 | Ping interval                | 54s                        | `internal/server/client.go`   |
 | Read deadline                | 60s, reset on each pong     | `internal/server/client.go`   |
 | Write deadline               | 10s per write               | `internal/server/client.go`   |
 | HTTP read / write timeout    | 15s each                   | `internal/server/http_server.go` |
+| HTTP read header timeout     | 5s                         | `internal/server/http_server.go` |
 | HTTP idle timeout            | 60s                        | `internal/server/http_server.go` |
+| HTTP max header bytes        | 64 KiB                     | `internal/server/http_server.go` |
 | Shutdown budget              | 15s HTTP + 15s hub, 30s cap | `cmd/server/main.go`         |
 
 ## Examples
@@ -74,6 +80,7 @@ export ALLOWED_ORIGINS=http://localhost:8080,http://localhost:3000
 export MAX_MESSAGE_SIZE=512
 export RATE_LIMIT_BURST=5
 export RATE_LIMIT_REFILL_INTERVAL=1
+export LOG_LEVEL=debug
 ```
 
 Production behind a reverse proxy on loopback:
@@ -84,6 +91,7 @@ export ALLOWED_ORIGINS=https://chat.example.com
 export MAX_MESSAGE_SIZE=1024
 export RATE_LIMIT_BURST=10
 export RATE_LIMIT_REFILL_INTERVAL=2
+export LOG_LEVEL=info
 ```
 
 ## Related

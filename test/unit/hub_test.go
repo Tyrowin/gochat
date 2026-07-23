@@ -143,7 +143,7 @@ func TestConcurrentHubOperations(t *testing.T) {
 
 	done := make(chan bool, 10)
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		go func(id int) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -160,7 +160,7 @@ func TestConcurrentHubOperations(t *testing.T) {
 		}(i)
 	}
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		select {
 		case <-done:
 		case <-time.After(200 * time.Millisecond):
@@ -248,7 +248,7 @@ func TestHubClientUnregistration(t *testing.T) {
 	t.Run("Multiple concurrent unregistration requests", func(t *testing.T) {
 		done := make(chan bool, 5)
 
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			go func(id int) {
 				defer func() {
 					if r := recover(); r != nil {
@@ -266,7 +266,7 @@ func TestHubClientUnregistration(t *testing.T) {
 			}(i)
 		}
 
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			select {
 			case <-done:
 			case <-time.After(200 * time.Millisecond):
@@ -319,7 +319,7 @@ func TestHubBroadcastMessage(t *testing.T) {
 	t.Run("Multiple concurrent broadcasts", func(t *testing.T) {
 		done := make(chan bool, 10)
 
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			go func(id int) {
 				defer func() {
 					if r := recover(); r != nil {
@@ -337,7 +337,7 @@ func TestHubBroadcastMessage(t *testing.T) {
 			}(i)
 		}
 
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			select {
 			case <-done:
 			case <-time.After(200 * time.Millisecond):
@@ -382,7 +382,7 @@ func TestHubShutdown(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 
 		// Register some clients
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			client := server.NewClient(nil, hub, "127.0.0.1:"+strconv.Itoa(12340+i))
 			select {
 			case hub.GetRegisterChan() <- client:
@@ -412,7 +412,7 @@ func TestHubChannelsCommunication(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	t.Run("Broadcast channel accepts messages", func(t *testing.T) {
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			msg := []byte(`{"content":"test"}`)
 			select {
 			case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: msg}:
