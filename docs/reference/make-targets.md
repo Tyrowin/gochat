@@ -21,12 +21,14 @@ targets work identically on Windows, macOS, and Linux. GNU Make is required on W
 | `build-windows`       | Cross-compile → `bin/windows/blip-amd64.exe`                            |
 | `build-windows-arm64` | Cross-compile → `bin/windows/blip-arm64.exe`                            |
 | `build-all`           | All six cross-compile targets                                            |
-| `release`             | `clean fmt vet lint test`, then trimmed static builds plus SHA256 checksums |
+| `release`             | `clean fmt vet lint test`, then trimmed, stripped static builds plus SHA256 checksums |
 | `list-platforms`      | `go tool dist list`                                                       |
 | `clean`               | Delete `bin/` and run `go clean -cache -testcache -modcache`              |
 
-All builds stamp `main.Version`, `main.Commit`, and `main.BuildTime` via `-ldflags`. The current
-`main` package does not declare those variables, so the values are accepted and ignored.
+All builds stamp `main.Version`, `main.Commit`, and `main.BuildTime` via `-ldflags`. The `main`
+package declares all three (`cmd/server/main.go`) and logs them on startup, so the stamped values
+show up in the first log line. `release` additionally passes `-s -w` to strip the symbol table and
+DWARF data.
 
 > **Note:** `clean` purges the module cache for every Go project on the machine, not just this one.
 > The next build re-downloads dependencies.

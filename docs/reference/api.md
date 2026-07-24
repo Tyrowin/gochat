@@ -23,8 +23,11 @@ Response bodies for the error cases:
 
 ```
 405 Method not allowed. WebSocket endpoint only accepts GET requests.
-403 (empty — produced by the gorilla/websocket upgrader)
+403 Forbidden
 ```
+
+The `403` body is produced by the gorilla/websocket upgrader, which calls `http.Error` with the
+standard status text and also sets a `Sec-Websocket-Version: 13` response header.
 
 Connections are also refused while the server is shutting down: the socket is accepted and then
 closed immediately.

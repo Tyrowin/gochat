@@ -42,7 +42,9 @@ Rules that catch people out:
 - Subdomains are not implied. List every origin your front end is served from.
 - Entries with no scheme (`example.com`) are dropped at startup with a log line and silently do
   nothing.
-- `*` disables origin checking entirely. Use it only for local experiments.
+- `*` accepts every origin, including `Origin` headers that are not valid URLs (a sandboxed iframe
+  or a `file://` page sends the literal `null`). It does **not** accept a request with no `Origin`
+  header at all — that is still rejected. Use it only for local experiments.
 
 Verify a deployment:
 
@@ -124,14 +126,12 @@ CI reads directly — plus the `Dockerfile` and the README.
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a security problem. Contact the maintainer privately through
-[GitHub](https://github.com/maltemindedal) — use a
+Do not open a public issue for a security problem. Use a
 [private security advisory](https://github.com/maltemindedal/blip/security/advisories/new) on the
-repository — and include a description, reproduction steps, and impact.
+repository and include a description, reproduction steps, and impact.
 
-> **TODO(verify):** No security contact address or disclosure policy exists in the repository. Add a
-> root `SECURITY.md` with a real contact and response expectations, or confirm that private
-> advisories are the intended channel.
+The full policy — supported versions, what to expect, and what is in and out of scope — is in
+[`SECURITY.md`](../../SECURITY.md).
 
 ## Related
 

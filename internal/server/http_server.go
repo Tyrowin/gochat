@@ -51,10 +51,6 @@ func StartHub() {
 // StartServer starts the HTTP server and begins listening for connections.
 // It blocks until the server stops and returns an error if it fails to start.
 func StartServer(server *http.Server) error {
-	if server == nil {
-		return errors.New("http server is nil")
-	}
-
 	log().Info("server listening", "addr", server.Addr)
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("listen and serve: %w", err)
@@ -63,17 +59,11 @@ func StartServer(server *http.Server) error {
 	return nil
 }
 
-// ShutdownServer gracefully shuts down the HTTP server without interrupting active connections.
-// It waits for active connections to close or until the timeout is reached.
-func ShutdownServer(server *http.Server, timeout time.Duration) error {
-	if server == nil {
-		return errors.New("http server is nil")
-	}
-
+// ShutdownServer gracefully shuts down the HTTP server without interrupting
+// active connections. It waits for active connections to close or until ctx is
+// done, whichever comes first.
+func ShutdownServer(ctx context.Context, server *http.Server) error {
 	log().Info("shutting down HTTP server")
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	if err := server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown http server: %w", err)
@@ -83,7 +73,8 @@ func ShutdownServer(server *http.Server, timeout time.Duration) error {
 	return nil
 }
 
-// GetHub returns the global hub instance for shutdown coordination.
-func GetHub() *Hub {
+// GlobalHub returns the process-wide hub instance, creating a fresh one if the
+// previous hub has already stopped.
+func GlobalHub() *Hub {
 	return ensureGlobalHub()
 }

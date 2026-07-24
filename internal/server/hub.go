@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 )
 
 // Hub manages all WebSocket client connections and handles message broadcasting.
@@ -25,12 +24,16 @@ type Hub struct {
 	// slice per message. Only Run touches it.
 	failed []*Client
 
-	wg         sync.WaitGroup
-	shutdown   chan struct{}
-	shutdownMu sync.Once
-	done       chan struct{}
-	stateMu    sync.Mutex
-	started    bool
+	// countReq carries a reply channel into the Run goroutine so callers can
+	// read the client count without touching the map themselves.
+	countReq chan chan int
+
+	wg           sync.WaitGroup
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
+	done         chan struct{}
+	stateMu      sync.Mutex
+	started      bool
 }
 
 // NewHub creates and initializes a new Hub instance with all necessary channels
@@ -41,27 +44,43 @@ func NewHub() *Hub {
 		broadcast:  make(chan BroadcastMessage),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		countReq:   make(chan chan int),
 		shutdown:   make(chan struct{}),
 		done:       make(chan struct{}),
 	}
 }
 
-// GetRegisterChan returns the channel used for registering new clients to the hub.
+// RegisterChan returns the channel used for registering new clients to the hub.
 // This channel is write-only from the caller's perspective.
-func (h *Hub) GetRegisterChan() chan<- *Client {
+func (h *Hub) RegisterChan() chan<- *Client {
 	return h.register
 }
 
-// GetUnregisterChan returns the channel used for unregistering clients from the hub.
+// UnregisterChan returns the channel used for unregistering clients from the hub.
 // This channel is write-only from the caller's perspective.
-func (h *Hub) GetUnregisterChan() chan<- *Client {
+func (h *Hub) UnregisterChan() chan<- *Client {
 	return h.unregister
 }
 
-// GetBroadcastChan returns the channel used for broadcasting messages to all clients.
+// BroadcastChan returns the channel used for broadcasting messages to all clients.
 // This channel is write-only from the caller's perspective.
-func (h *Hub) GetBroadcastChan() chan<- BroadcastMessage {
+func (h *Hub) BroadcastChan() chan<- BroadcastMessage {
 	return h.broadcast
+}
+
+// ClientCount reports how many clients are currently registered. The count is
+// answered by the Run goroutine, which owns the map, so it is consistent with
+// every registration and broadcast the hub has already processed. It returns 0
+// once the hub has stopped.
+func (h *Hub) ClientCount() int {
+	reply := make(chan int, 1)
+
+	select {
+	case h.countReq <- reply:
+		return <-reply
+	case <-h.done:
+		return 0
+	}
 }
 
 // Start launches the hub event loop in a goroutine if it is not already running.
@@ -122,17 +141,15 @@ func (h *Hub) Run() {
 
 		case broadcastMsg := <-h.broadcast:
 			h.handleBroadcast(broadcastMsg)
+
+		case reply := <-h.countReq:
+			reply <- len(h.clients)
 		}
 	}
 }
 
 // addClient registers a client and starts its read and write pumps.
 func (h *Hub) addClient(client *Client) {
-	if client == nil {
-		log().Warn("received nil client registration; skipping")
-		return
-	}
-
 	h.clients[client] = struct{}{}
 	log().Info("client registered", "addr", client.addr, "total_clients", len(h.clients))
 
@@ -150,11 +167,6 @@ func (h *Hub) addClient(client *Client) {
 // removeClient unregisters a client and closes its send channel. It is a no-op
 // for clients that are already gone, which makes double unregistration safe.
 func (h *Hub) removeClient(client *Client) {
-	if client == nil {
-		log().Warn("received nil client unregistration; skipping")
-		return
-	}
-
 	if _, ok := h.clients[client]; !ok {
 		return
 	}
@@ -208,28 +220,23 @@ func (h *Hub) shutdownClients() {
 	clear(h.clients)
 }
 
-// Shutdown initiates graceful shutdown of the hub and waits for all goroutines to complete.
-// It returns after all client connections are closed and goroutines have finished,
-// or when the timeout is reached.
-func (h *Hub) Shutdown(timeout time.Duration) error {
+// Shutdown initiates graceful shutdown of the hub and waits for all goroutines
+// to complete. It returns after all client connections are closed and goroutines
+// have finished, or when ctx is done — whichever comes first. Both stages share
+// the one deadline carried by ctx.
+func (h *Hub) Shutdown(ctx context.Context) error {
 	if !h.hasStarted() {
 		return nil
 	}
 
 	log().Info("initiating hub shutdown")
 
-	h.shutdownMu.Do(func() {
+	h.shutdownOnce.Do(func() {
 		close(h.shutdown)
 	})
 
-	runLoopTimer := time.NewTimer(timeout)
-	defer runLoopTimer.Stop()
-
-	select {
-	case <-h.done:
-	case <-runLoopTimer.C:
-		log().Error("hub shutdown timed out waiting for the event loop")
-		return fmt.Errorf("hub event loop shutdown timed out: %w", context.DeadlineExceeded)
+	if err := awaitStage(ctx, h.done, "event loop"); err != nil {
+		return err
 	}
 
 	clientsDone := make(chan struct{})
@@ -238,15 +245,22 @@ func (h *Hub) Shutdown(timeout time.Duration) error {
 		close(clientsDone)
 	}()
 
-	clientTimer := time.NewTimer(timeout)
-	defer clientTimer.Stop()
+	if err := awaitStage(ctx, clientsDone, "client"); err != nil {
+		return err
+	}
 
+	log().Info("hub shutdown completed")
+	return nil
+}
+
+// awaitStage blocks until done closes or ctx is cancelled, naming the stage in
+// the log line and the returned error.
+func awaitStage(ctx context.Context, done <-chan struct{}, stage string) error {
 	select {
-	case <-clientsDone:
-		log().Info("hub shutdown completed")
+	case <-done:
 		return nil
-	case <-clientTimer.C:
-		log().Error("hub shutdown timed out; some client goroutines may still be running")
-		return fmt.Errorf("hub client shutdown timed out: %w", context.DeadlineExceeded)
+	case <-ctx.Done():
+		log().Error("hub shutdown timed out", "stage", stage)
+		return fmt.Errorf("hub %s shutdown timed out: %w", stage, ctx.Err())
 	}
 }

@@ -6,7 +6,8 @@
 package unit
 
 import (
-	"strconv"
+	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,435 +16,200 @@ import (
 
 const shutdownErrorMsg = "Failed to shutdown hub: %v"
 
-// TestNewHub tests the hub creation function.
-// It verifies that NewHub returns a properly initialized Hub
-// with all necessary channels and data structures.
-func TestNewHub(t *testing.T) {
+// shutdownTimeout is the budget every hub shutdown in this file gets. It is
+// generous because a failing shutdown should report a real error, not a race
+// against a slow machine.
+const shutdownTimeout = 5 * time.Second
+
+// startHub runs a hub's event loop and shuts it down when the test ends. It
+// returns once the loop is provably serving requests, so no caller needs to
+// sleep before using the hub.
+func startHub(t *testing.T) *server.Hub {
+	t.Helper()
+
 	hub := server.NewHub()
+	hub.Start()
 
-	if hub == nil {
-		t.Fatal("NewHub() returned nil")
-	}
+	// ClientCount is answered by the Run goroutine, so a reply proves the loop
+	// is up and has processed everything queued before this point.
+	hub.ClientCount()
 
-	select {
-	case hub.GetRegisterChan() <- nil:
-	case <-time.After(10 * time.Millisecond):
-	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+
+		if err := hub.Shutdown(ctx); err != nil {
+			t.Errorf(shutdownErrorMsg, err)
+		}
+	})
+
+	return hub
 }
 
-// TestHubChannels tests that all hub channels are properly initialized.
-// It verifies that the register, unregister, and broadcast channels
-// are not nil and accessible through their getter methods.
-func TestHubChannels(t *testing.T) {
+// shutdownHub shuts a hub down with the standard budget and reports failures.
+func shutdownHub(t *testing.T, hub *server.Hub) error {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	return hub.Shutdown(ctx)
+}
+
+// TestNewHubExposesItsChannels verifies that NewHub returns a hub whose
+// register, unregister, and broadcast channels are all usable.
+func TestNewHubExposesItsChannels(t *testing.T) {
 	hub := server.NewHub()
 
-	regChan := hub.GetRegisterChan()
-	unregChan := hub.GetUnregisterChan()
-	broadcastChan := hub.GetBroadcastChan()
-
-	if regChan == nil {
+	if hub.RegisterChan() == nil {
 		t.Error("Register channel is nil")
 	}
-	if unregChan == nil {
+	if hub.UnregisterChan() == nil {
 		t.Error("Unregister channel is nil")
 	}
-	if broadcastChan == nil {
+	if hub.BroadcastChan() == nil {
 		t.Error("Broadcast channel is nil")
 	}
 }
 
-// TestHubRunStartsWithoutPanic tests that the hub's Run method starts without panicking.
-// It verifies that the hub can be started in a goroutine and runs successfully
-// for a short period without encountering runtime errors.
-func TestHubRunStartsWithoutPanic(t *testing.T) {
-	hub := server.NewHub()
+// TestHubStartsWithNoClients verifies that a freshly started hub reports an
+// empty client set.
+func TestHubStartsWithNoClients(t *testing.T) {
+	hub := startHub(t)
 
-	done := make(chan bool, 1)
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("Hub.Run() panicked: %v", r)
-			}
-			done <- true
-		}()
-		go hub.Run()
-		time.Sleep(10 * time.Millisecond)
-	}()
+	if count := hub.ClientCount(); count != 0 {
+		t.Errorf("Expected 0 clients on a new hub, got %d", count)
+	}
+}
+
+// TestHubAcceptsBroadcastWithNoClients verifies that broadcasting into an empty
+// hub is accepted and leaves the hub running.
+func TestHubAcceptsBroadcastWithNoClients(t *testing.T) {
+	hub := startHub(t)
 
 	select {
-	case <-done:
-	case <-time.After(100 * time.Millisecond):
-		t.Error("Hub.Run() test timed out")
+	case hub.BroadcastChan() <- server.BroadcastMessage{Payload: []byte(`{"content":"nobody home"}`)}:
+	case <-time.After(time.Second):
+		t.Fatal("Broadcast channel did not accept a message")
+	}
+
+	// The reply proves the loop finished the broadcast and came back around.
+	if count := hub.ClientCount(); count != 0 {
+		t.Errorf("Expected 0 clients after an empty broadcast, got %d", count)
 	}
 }
 
-// TestHubBroadcastChannel tests the hub's broadcast channel functionality.
-// It verifies that messages can be sent to the broadcast channel
-// without blocking when the hub is running.
-func TestHubBroadcastChannel(t *testing.T) {
-	hub := server.NewHub()
+// TestHubHandlesConcurrentBroadcasts verifies that many goroutines can publish
+// to the broadcast channel at once without deadlocking the event loop.
+func TestHubHandlesConcurrentBroadcasts(t *testing.T) {
+	hub := startHub(t)
 
-	go hub.Run()
-	time.Sleep(10 * time.Millisecond)
+	const senders = 10
+	var wg sync.WaitGroup
+	wg.Add(senders)
 
-	testMessage := []byte("test broadcast")
-
-	select {
-	case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: testMessage}:
-	case <-time.After(100 * time.Millisecond):
-		t.Error("Failed to send message to broadcast channel")
-	}
-
-	time.Sleep(10 * time.Millisecond)
-}
-
-const testClientAddr = "127.0.0.1:12345"
-
-// TestNewClient tests the client creation function.
-// It verifies that NewClient returns a properly initialized Client
-// with all necessary fields and channels set up correctly.
-func TestNewClient(t *testing.T) {
-	hub := server.NewHub()
-
-	client := server.NewClient(nil, hub, testClientAddr)
-
-	if client == nil {
-		t.Fatal("NewClient() returned nil")
-	}
-
-	sendChan := client.GetSendChan()
-	if sendChan == nil {
-		t.Error("Client send channel is nil")
-	}
-}
-
-// TestClientSendChannel tests the client's send channel functionality.
-// It verifies that the client's send channel is properly initialized
-// and accessible through the GetSendChan method.
-func TestClientSendChannel(t *testing.T) {
-	hub := server.NewHub()
-	client := server.NewClient(nil, hub, testClientAddr)
-
-	sendChan := client.GetSendChan()
-
-	select {
-	case <-sendChan:
-		t.Error("Expected empty send channel but received a message")
-	case <-time.After(10 * time.Millisecond):
-	}
-}
-
-// TestConcurrentHubOperations tests that the hub handles concurrent operations safely.
-// It verifies that multiple goroutines can send messages to the broadcast channel
-// simultaneously without causing race conditions or panics.
-func TestConcurrentHubOperations(t *testing.T) {
-	hub := server.NewHub()
-	go hub.Run()
-	time.Sleep(10 * time.Millisecond)
-
-	done := make(chan bool, 10)
-
-	for i := range 10 {
-		go func(id int) {
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("Goroutine %d panicked: %v", id, r)
-				}
-				done <- true
-			}()
-
-			message := []byte("concurrent message")
-			select {
-			case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: message}:
-			case <-time.After(100 * time.Millisecond):
-			}
-		}(i)
-	}
-
-	for range 10 {
-		select {
-		case <-done:
-		case <-time.After(200 * time.Millisecond):
-			t.Error("Concurrent operations test timed out")
-			return
-		}
-	}
-}
-
-// TestHubClientRegistrationChannel tests the hub's client registration channel.
-// It verifies that the registration channel accepts clients without blocking.
-func TestHubClientRegistrationChannel(t *testing.T) {
-	hub := server.NewHub()
-	go hub.Run()
-	defer func() {
-		if err := hub.Shutdown(time.Second); err != nil {
-			t.Errorf(shutdownErrorMsg, err)
-		}
-	}()
-	time.Sleep(10 * time.Millisecond)
-
-	t.Run("Nil client registration is ignored", func(t *testing.T) {
-		select {
-		case hub.GetRegisterChan() <- nil:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("Failed to send nil client")
-		}
-
-		// Should not panic or cause issues
-		time.Sleep(20 * time.Millisecond)
-	})
-
-	t.Run("Registration channel is non-blocking", func(t *testing.T) {
-		// Test that we can send to the registration channel
-		done := make(chan bool, 1)
-
+	for range senders {
 		go func() {
-			// This would block if the hub isn't running
-			hub.GetRegisterChan() <- nil
-			done <- true
+			defer wg.Done()
+
+			select {
+			case hub.BroadcastChan() <- server.BroadcastMessage{Payload: []byte(`{"content":"concurrent"}`)}:
+			case <-time.After(2 * time.Second):
+				t.Error("Broadcast channel blocked under concurrent senders")
+			}
 		}()
+	}
 
-		select {
-		case <-done:
-			// Success - channel accepted the value
-		case <-time.After(100 * time.Millisecond):
-			t.Error("Registration channel blocked")
-		}
+	wg.Wait()
 
-		time.Sleep(20 * time.Millisecond)
-	})
+	if count := hub.ClientCount(); count != 0 {
+		t.Errorf("Expected 0 clients after concurrent broadcasts, got %d", count)
+	}
 }
 
-// TestHubClientUnregistration tests the hub's client unregistration functionality.
-// It verifies that unregistration requests are properly handled by the hub.
-func TestHubClientUnregistration(t *testing.T) {
+// TestHubShutdownStopsTheEventLoop verifies that Shutdown drains the hub and
+// leaves it reporting stopped.
+func TestHubShutdownStopsTheEventLoop(t *testing.T) {
 	hub := server.NewHub()
-	go hub.Run()
-	defer func() {
-		if err := hub.Shutdown(time.Second); err != nil {
-			t.Errorf(shutdownErrorMsg, err)
-		}
-	}()
-	time.Sleep(10 * time.Millisecond)
+	hub.Start()
+	hub.ClientCount()
 
-	t.Run("Unregister channel is non-blocking", func(t *testing.T) {
-		done := make(chan bool, 1)
+	if hub.IsStopped() {
+		t.Fatal("Hub reported stopped while still running")
+	}
 
+	if err := shutdownHub(t, hub); err != nil {
+		t.Fatalf(shutdownErrorMsg, err)
+	}
+
+	if !hub.IsStopped() {
+		t.Error("Hub did not report stopped after Shutdown returned")
+	}
+}
+
+// TestHubShutdownBeforeStartIsNoOp verifies that shutting down a hub that never
+// ran succeeds instead of blocking on an event loop that does not exist.
+func TestHubShutdownBeforeStartIsNoOp(t *testing.T) {
+	hub := server.NewHub()
+
+	if err := shutdownHub(t, hub); err != nil {
+		t.Errorf("Expected shutdown of an unstarted hub to succeed, got: %v", err)
+	}
+}
+
+// TestHubShutdownIsIdempotent verifies that concurrent and repeated Shutdown
+// calls are safe and all report success.
+func TestHubShutdownIsIdempotent(t *testing.T) {
+	hub := server.NewHub()
+	hub.Start()
+	hub.ClientCount()
+
+	const callers = 3
+	var wg sync.WaitGroup
+	wg.Add(callers)
+
+	errs := make(chan error, callers)
+	for range callers {
 		go func() {
-			// Send a nil client (hub should handle it gracefully)
-			hub.GetUnregisterChan() <- nil
-			done <- true
+			defer wg.Done()
+			errs <- shutdownHub(t, hub)
 		}()
+	}
 
-		select {
-		case <-done:
-			// Success
-		case <-time.After(100 * time.Millisecond):
-			t.Error("Unregistration channel blocked")
-		}
+	wg.Wait()
+	close(errs)
 
-		time.Sleep(20 * time.Millisecond)
-	})
-
-	t.Run("Multiple concurrent unregistration requests", func(t *testing.T) {
-		done := make(chan bool, 5)
-
-		for i := range 5 {
-			go func(id int) {
-				defer func() {
-					if r := recover(); r != nil {
-						t.Errorf("Unregistration goroutine %d panicked: %v", id, r)
-					}
-					done <- true
-				}()
-
-				// Send nil - hub should handle gracefully
-				select {
-				case hub.GetUnregisterChan() <- nil:
-				case <-time.After(100 * time.Millisecond):
-					t.Errorf("Failed to send unregister request %d", id)
-				}
-			}(i)
-		}
-
-		for range 5 {
-			select {
-			case <-done:
-			case <-time.After(200 * time.Millisecond):
-				t.Error("Concurrent unregistration test timed out")
-				return
-			}
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	})
-}
-
-// TestHubBroadcastMessage tests the hub's broadcast functionality.
-// It verifies that messages are properly broadcast to all clients except the sender.
-func TestHubBroadcastMessage(t *testing.T) {
-	hub := server.NewHub()
-	go hub.Run()
-	defer func() {
-		if err := hub.Shutdown(time.Second); err != nil {
-			t.Errorf(shutdownErrorMsg, err)
-		}
-	}()
-	time.Sleep(10 * time.Millisecond)
-
-	t.Run("Broadcast with nil sender", func(t *testing.T) {
-		testMsg := []byte(`{"content":"broadcast test"}`)
-
-		select {
-		case hub.GetBroadcastChan() <- server.BroadcastMessage{Sender: nil, Payload: testMsg}:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("Failed to send broadcast message")
-		}
-
-		time.Sleep(20 * time.Millisecond)
-	})
-
-	t.Run("Broadcast with sender", func(t *testing.T) {
-		sender := server.NewClient(nil, hub, "127.0.0.1:12345")
-		testMsg := []byte(`{"content":"message from sender"}`)
-
-		select {
-		case hub.GetBroadcastChan() <- server.BroadcastMessage{Sender: sender, Payload: testMsg}:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("Failed to send broadcast message")
-		}
-
-		time.Sleep(20 * time.Millisecond)
-	})
-
-	t.Run("Multiple concurrent broadcasts", func(t *testing.T) {
-		done := make(chan bool, 10)
-
-		for i := range 10 {
-			go func(id int) {
-				defer func() {
-					if r := recover(); r != nil {
-						t.Errorf("Broadcast goroutine %d panicked: %v", id, r)
-					}
-					done <- true
-				}()
-
-				msg := []byte(`{"content":"concurrent broadcast"}`)
-				select {
-				case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: msg}:
-				case <-time.After(100 * time.Millisecond):
-					t.Errorf("Failed to broadcast message %d", id)
-				}
-			}(i)
-		}
-
-		for range 10 {
-			select {
-			case <-done:
-			case <-time.After(200 * time.Millisecond):
-				t.Error("Concurrent broadcast test timed out")
-				return
-			}
-		}
-
-		time.Sleep(50 * time.Millisecond)
-	})
-
-	t.Run("Broadcast empty message", func(t *testing.T) {
-		emptyMsg := []byte("")
-
-		select {
-		case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: emptyMsg}:
-		case <-time.After(100 * time.Millisecond):
-			t.Fatal("Failed to send empty broadcast message")
-		}
-
-		time.Sleep(20 * time.Millisecond)
-	})
-}
-
-// TestHubShutdown tests the hub's graceful shutdown functionality.
-// It verifies that the hub can be shut down properly and all resources are cleaned up.
-func TestHubShutdown(t *testing.T) {
-	t.Run("Shutdown empty hub", func(t *testing.T) {
-		hub := server.NewHub()
-		go hub.Run()
-		time.Sleep(10 * time.Millisecond)
-
-		err := hub.Shutdown(time.Second)
+	for err := range errs {
 		if err != nil {
-			t.Errorf("Expected successful shutdown, got error: %v", err)
+			t.Errorf("Concurrent shutdown returned an error: %v", err)
 		}
-	})
+	}
 
-	t.Run("Shutdown hub with clients", func(t *testing.T) {
-		hub := server.NewHub()
-		go hub.Run()
-		time.Sleep(10 * time.Millisecond)
-
-		// Register some clients
-		for i := range 3 {
-			client := server.NewClient(nil, hub, "127.0.0.1:"+strconv.Itoa(12340+i))
-			select {
-			case hub.GetRegisterChan() <- client:
-			case <-time.After(100 * time.Millisecond):
-				t.Fatalf("Failed to register client %d", i)
-			}
-		}
-		time.Sleep(50 * time.Millisecond)
-
-		err := hub.Shutdown(2 * time.Second)
-		if err != nil {
-			t.Errorf("Expected successful shutdown with clients, got error: %v", err)
-		}
-	})
+	if err := shutdownHub(t, hub); err != nil {
+		t.Errorf("Shutdown after shutdown returned an error: %v", err)
+	}
 }
 
-// TestHubChannelsCommunication tests that hub channels can communicate properly.
-// It verifies that messages can be sent through broadcast, register, and unregister channels.
-func TestHubChannelsCommunication(t *testing.T) {
+// TestHubClientCountAfterShutdown verifies that ClientCount stops blocking once
+// the event loop has exited.
+func TestHubClientCountAfterShutdown(t *testing.T) {
 	hub := server.NewHub()
-	go hub.Run()
-	defer func() {
-		if err := hub.Shutdown(time.Second); err != nil {
-			t.Errorf(shutdownErrorMsg, err)
-		}
-	}()
-	time.Sleep(10 * time.Millisecond)
+	hub.Start()
+	hub.ClientCount()
 
-	t.Run("Broadcast channel accepts messages", func(t *testing.T) {
-		for i := range 3 {
-			msg := []byte(`{"content":"test"}`)
-			select {
-			case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: msg}:
-				// Success
-			case <-time.After(100 * time.Millisecond):
-				t.Fatalf("Iteration %d: Failed to send broadcast message", i)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-	})
+	if err := shutdownHub(t, hub); err != nil {
+		t.Fatalf(shutdownErrorMsg, err)
+	}
 
-	t.Run("All channels remain responsive", func(t *testing.T) {
-		// Send to all channels to ensure they're all working
-		select {
-		case hub.GetBroadcastChan() <- server.BroadcastMessage{Payload: []byte(`{"content":"test"}`)}:
-		case <-time.After(50 * time.Millisecond):
-			t.Error("Broadcast channel not responsive")
-		}
+	done := make(chan int, 1)
+	go func() { done <- hub.ClientCount() }()
 
-		select {
-		case hub.GetRegisterChan() <- nil:
-		case <-time.After(50 * time.Millisecond):
-			t.Error("Register channel not responsive")
+	select {
+	case count := <-done:
+		if count != 0 {
+			t.Errorf("Expected 0 clients after shutdown, got %d", count)
 		}
-
-		select {
-		case hub.GetUnregisterChan() <- nil:
-		case <-time.After(50 * time.Millisecond):
-			t.Error("Unregister channel not responsive")
-		}
-
-		time.Sleep(20 * time.Millisecond)
-	})
+	case <-time.After(time.Second):
+		t.Error("ClientCount blocked after the hub stopped")
+	}
 }

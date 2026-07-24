@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"context"
 	"net/http"
 	"sync"
 	"testing"
@@ -14,24 +13,23 @@ import (
 
 const (
 	testOriginURL = "http://localhost:8080"
+
+	// shutdownBudget is the deadline every shutdown in this package gets unless
+	// it is deliberately testing a short one.
+	shutdownBudget = 5 * time.Second
 )
 
 // TestGracefulShutdown verifies that the server shuts down gracefully
 // when the hub receives a shutdown signal
 func TestGracefulShutdown(t *testing.T) {
-	// Create a new hub for this test
-	hub := server.NewHub()
+	hub := startHub(t)
 
-	// Start the hub
-	go hub.Run()
-
-	// Give hub time to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Trigger shutdown
-	err := hub.Shutdown(5 * time.Second)
-	if err != nil {
+	if err := hub.Shutdown(shutdownContext(t, shutdownBudget)); err != nil {
 		t.Errorf("Hub shutdown failed: %v", err)
+	}
+
+	if !hub.IsStopped() {
+		t.Error("Hub did not report stopped after shutdown")
 	}
 }
 
@@ -41,7 +39,7 @@ func TestGracefulShutdownWithClients(t *testing.T) {
 	hub, httpServer := setupShutdownTestServer(t, ":18082")
 
 	numClients := 5
-	clients := connectTestClients(t, numClients, "ws://localhost:18082/ws")
+	clients := connectTestClients(t, hub, numClients, "ws://localhost:18082/ws")
 
 	performGracefulShutdown(t, httpServer, hub)
 	verifyClientsDisconnected(t, clients, numClients)
@@ -57,10 +55,12 @@ func setupShutdownTestServer(t *testing.T, port string) (*server.Hub, *http.Serv
 	config := server.NewConfig()
 	config.Port = port
 	config.AllowedOrigins = []string{testOriginURL, "http://localhost" + port}
+	// Rate limiting is exercised in security_test.go; here it would only throttle
+	// the messages a shutdown test needs in flight.
+	config.RateLimit = server.RateLimitConfig{Burst: 1000, RefillInterval: time.Second}
 	server.SetConfig(config)
 
-	hub := server.NewHub()
-	hub.Start()
+	hub := startHub(t)
 
 	mux := server.SetupRoutesWithHub(hub)
 	httpServer := server.CreateServer(config.Port, mux)
@@ -69,12 +69,13 @@ func setupShutdownTestServer(t *testing.T, port string) (*server.Hub, *http.Serv
 		_ = server.StartServer(httpServer)
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	testhelpers.WaitForServer(t, "http://localhost"+port+"/", shutdownBudget)
 	return hub, httpServer
 }
 
-// connectTestClients creates multiple WebSocket clients without background readers
-func connectTestClients(t *testing.T, numClients int, url string) []*websocket.Conn {
+// connectTestClients creates multiple WebSocket clients and returns once the hub
+// has registered every one of them.
+func connectTestClients(t *testing.T, hub *server.Hub, numClients int, url string) []*websocket.Conn {
 	t.Helper()
 
 	clients := make([]*websocket.Conn, numClients)
@@ -87,7 +88,10 @@ func connectTestClients(t *testing.T, numClients int, url string) []*websocket.C
 		clients[i] = conn
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	testhelpers.WaitFor(t, shutdownBudget, "every client to register", func() bool {
+		return hub.ClientCount() == numClients
+	})
+
 	return clients
 }
 
@@ -95,29 +99,12 @@ func connectTestClients(t *testing.T, numClients int, url string) []*websocket.C
 func performGracefulShutdown(t *testing.T, httpServer *http.Server, hub *server.Hub) {
 	t.Helper()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	if err := server.ShutdownServer(shutdownContext(t, shutdownBudget), httpServer); err != nil {
+		t.Errorf("HTTP server shutdown failed: %v", err)
+	}
 
-	shutdownComplete := make(chan error, 1)
-	go func() {
-		if err := server.ShutdownServer(httpServer, 5*time.Second); err != nil {
-			shutdownComplete <- err
-			return
-		}
-		if err := hub.Shutdown(5 * time.Second); err != nil {
-			shutdownComplete <- err
-			return
-		}
-		shutdownComplete <- nil
-	}()
-
-	select {
-	case err := <-shutdownComplete:
-		if err != nil {
-			t.Errorf("Shutdown failed: %v", err)
-		}
-	case <-shutdownCtx.Done():
-		t.Fatal("Shutdown timeout exceeded")
+	if err := hub.Shutdown(shutdownContext(t, shutdownBudget)); err != nil {
+		t.Errorf("Hub shutdown failed: %v", err)
 	}
 }
 
@@ -146,238 +133,74 @@ func verifyClientsDisconnected(t *testing.T, clients []*websocket.Conn, expected
 	}
 }
 
-// TestShutdownWithActiveMessages verifies that messages in flight are handled
-// properly during shutdown
+// TestShutdownWithActiveMessages verifies that messages in flight are delivered
+// before shutdown tears the hub down.
 func TestShutdownWithActiveMessages(t *testing.T) {
-	hub, httpServer := setupMessageTestServer(t)
-	client1, client2 := connectMessageTestClients(t)
-	defer func() {
-		if err := client1.Close(); err != nil {
-			t.Logf("Failed to close client1: %v", err)
-		}
-	}()
-	defer func() {
-		if err := client2.Close(); err != nil {
-			t.Logf("Failed to close client2: %v", err)
-		}
-	}()
+	hub, httpServer := setupShutdownTestServer(t, ":18083")
+	clients := connectTestClients(t, hub, 2, "ws://localhost:18083/ws")
+	sender, receiver := clients[0], clients[1]
 
-	messagesSent, messagesReceived := runMessageExchange(t, client1, client2)
-	shutdownMessageTestServer(t, httpServer, hub)
-
-	// Log results
-	t.Logf("Messages sent: %d, Messages received: %d", messagesSent, messagesReceived)
-
-	// Note: During shutdown, some messages may not be delivered
-	// The important thing is the shutdown completes gracefully
-	if messagesSent == 0 {
-		t.Error("Failed to send any messages")
-	}
-}
-
-// setupMessageTestServer creates and starts a test server for message testing
-func setupMessageTestServer(t *testing.T) (*server.Hub, *http.Server) {
-	t.Helper()
-	t.Cleanup(func() {
-		server.SetConfig(nil)
-	})
-
-	config := server.NewConfig()
-	config.Port = ":18083"
-	config.AllowedOrigins = []string{testOriginURL, "http://localhost:18083"}
-	server.SetConfig(config)
-
-	hub := server.NewHub()
-	hub.Start()
-
-	mux := server.SetupRoutesWithHub(hub)
-	httpServer := server.CreateServer(config.Port, mux)
-
-	go func() {
-		_ = server.StartServer(httpServer)
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-	return hub, httpServer
-}
-
-// connectMessageTestClients creates two WebSocket clients for message exchange
-func connectMessageTestClients(t *testing.T) (*websocket.Conn, *websocket.Conn) {
-	t.Helper()
-
-	client1, err := testhelpers.ConnectWebSocket("ws://localhost:18083/ws")
-	if err != nil {
-		t.Fatalf("Failed to connect client1: %v", err)
-	}
-
-	client2, err := testhelpers.ConnectWebSocket("ws://localhost:18083/ws")
-	if err != nil {
-		t.Fatalf("Failed to connect client2: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-	return client1, client2
-}
-
-// runMessageExchange sends messages from client1 and receives on client2
-func runMessageExchange(_ *testing.T, client1, client2 *websocket.Conn) (int, int) {
-	messagesSent := 0
-	messagesReceived := 0
-	var receiveMutex sync.Mutex
-	stopReceiving := make(chan struct{})
-
-	// Start receiving on client2
-	go receiveMessages(client2, &messagesReceived, &receiveMutex, stopReceiving)
-
-	// Send multiple messages
-	for range 10 {
-		err := testhelpers.SendMessage(client1, "Test message")
-		if err == nil {
-			messagesSent++
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Wait a bit for messages to be delivered
-	time.Sleep(200 * time.Millisecond)
-	close(stopReceiving)
-
-	// Read messagesReceived with mutex protection to avoid race condition
-	receiveMutex.Lock()
-	finalMessagesReceived := messagesReceived
-	receiveMutex.Unlock()
-
-	return messagesSent, finalMessagesReceived
-}
-
-// receiveMessages continuously receives messages on a WebSocket connection
-func receiveMessages(client *websocket.Conn, messagesReceived *int, mutex *sync.Mutex, stop chan struct{}) {
-	defer func() {
-		// Recover from panics during shutdown to prevent test failures
-		_ = recover()
-	}()
-
-	for {
-		select {
-		case <-stop:
-			return
-		default:
-			if err := client.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
-				return
-			}
-			_, _, err := client.ReadMessage()
-			if err == nil {
-				mutex.Lock()
-				(*messagesReceived)++
-				mutex.Unlock()
-			} else {
-				// Connection closed or error - stop receiving
-				return
-			}
+	const messageCount = 10
+	for i := range messageCount {
+		if err := testhelpers.SendMessage(sender, "Test message"); err != nil {
+			t.Fatalf("Failed to send message %d: %v", i, err)
 		}
 	}
-}
 
-// shutdownMessageTestServer initiates graceful shutdown of the test server
-func shutdownMessageTestServer(t *testing.T, httpServer *http.Server, hub *server.Hub) {
-	t.Helper()
-
-	if err := server.ShutdownServer(httpServer, 3*time.Second); err != nil {
-		t.Logf("HTTP server shutdown error (may be expected): %v", err)
+	received := countReceivedMessages(t, receiver, messageCount)
+	if received != messageCount {
+		t.Errorf("Expected %d messages before shutdown, got %d", messageCount, received)
 	}
 
-	if err := hub.Shutdown(3 * time.Second); err != nil {
-		t.Logf("Hub shutdown error (may be expected): %v", err)
-	}
+	performGracefulShutdown(t, httpServer, hub)
 }
 
-// TestShutdownTimeout verifies that shutdown respects timeout
+// TestShutdownTimeout verifies that shutdown returns promptly rather than
+// blocking for its whole budget when there is nothing left to drain.
 func TestShutdownTimeout(t *testing.T) {
-	// Create a hub
-	hub := server.NewHub()
-	go hub.Run()
+	hub := startHub(t)
 
-	// Give hub time to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Shutdown with very short timeout
-	start := time.Now()
-	err := hub.Shutdown(100 * time.Millisecond)
-	elapsed := time.Since(start)
-
-	// Should complete quickly
-	if elapsed > 500*time.Millisecond {
-		t.Errorf("Shutdown took too long: %v", elapsed)
-	}
-
-	// May or may not have error depending on timing
-	if err != nil {
-		t.Logf("Shutdown returned error (may be expected with short timeout): %v", err)
+	// A budget this short is only met if Shutdown returns as soon as the event
+	// loop and the pumps are done, rather than waiting out a timer.
+	if err := hub.Shutdown(shutdownContext(t, 100*time.Millisecond)); err != nil {
+		t.Errorf("Expected an idle hub to shut down within its budget, got: %v", err)
 	}
 }
 
-// TestConcurrentShutdown verifies that multiple shutdown calls are safe
+// TestConcurrentShutdown verifies that multiple shutdown calls are safe and all
+// report success.
 func TestConcurrentShutdown(t *testing.T) {
-	hub := server.NewHub()
-	go hub.Run()
+	hub := startHub(t)
 
-	time.Sleep(50 * time.Millisecond)
-
-	// Call shutdown multiple times concurrently
+	const callers = 3
 	var wg sync.WaitGroup
-	errors := make(chan error, 3)
+	wg.Add(callers)
 
-	for range 3 {
-		wg.Add(1)
+	errs := make(chan error, callers)
+	for range callers {
 		go func() {
 			defer wg.Done()
-			err := hub.Shutdown(2 * time.Second)
-			if err != nil {
-				errors <- err
-			}
+			errs <- hub.Shutdown(shutdownContext(t, shutdownBudget))
 		}()
 	}
 
 	wg.Wait()
-	close(errors)
+	close(errs)
 
-	// Collect any errors
-	errorCount := 0
-	for err := range errors {
-		errorCount++
-		t.Logf("Shutdown error: %v", err)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("Concurrent shutdown returned an error: %v", err)
+		}
 	}
-
-	// First call should succeed, others may timeout or error
-	t.Logf("Total shutdown errors: %d (expected: at least 2 of 3 to timeout)", errorCount)
 }
 
 // TestNoClientsShutdown verifies shutdown works when no clients are connected
 func TestNoClientsShutdown(t *testing.T) {
-	config := server.NewConfig()
-	config.Port = ":18084"
-	config.AllowedOrigins = []string{testOriginURL, "http://localhost:18084"}
-	server.SetConfig(config)
+	hub, httpServer := setupShutdownTestServer(t, ":18084")
 
-	hub := server.NewHub()
-	hub.Start()
-
-	// Setup routes AFTER config to ensure origin validation is configured
-	mux := server.SetupRoutesWithHub(hub)
-	httpServer := server.CreateServer(config.Port, mux)
-
-	go func() {
-		_ = server.StartServer(httpServer)
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	// Shutdown with no clients
-	if err := server.ShutdownServer(httpServer, 2*time.Second); err != nil {
-		t.Errorf("HTTP server shutdown failed: %v", err)
+	if count := hub.ClientCount(); count != 0 {
+		t.Fatalf("Expected no clients, got %d", count)
 	}
 
-	if err := hub.Shutdown(2 * time.Second); err != nil {
-		t.Errorf("Hub shutdown failed: %v", err)
-	}
+	performGracefulShutdown(t, httpServer, hub)
 }

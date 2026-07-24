@@ -62,6 +62,13 @@ func isOriginAllowed(r *http.Request) bool {
 
 	snap := currentSnapshot()
 
+	// "*" accepts anything that carried an Origin at all, including headers
+	// that do not parse as a URL, such as the literal "null" a sandboxed
+	// iframe or a file:// page sends.
+	if snap.allowAll {
+		return true
+	}
+
 	// Fast path: browsers send the already-canonical form, so the common case
 	// matches the allow-list without parsing a URL.
 	if _, exists := snap.origins[originHeader]; exists {
@@ -71,10 +78,6 @@ func isOriginAllowed(r *http.Request) bool {
 	normalizedOrigin, ok := normalizeOrigin(originHeader)
 	if !ok {
 		return false
-	}
-
-	if snap.allowAll {
-		return true
 	}
 
 	_, exists := snap.origins[normalizedOrigin]

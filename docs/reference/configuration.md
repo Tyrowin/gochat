@@ -1,8 +1,10 @@
 # Configuration Reference
 
-Blip is configured entirely through environment variables, read once at startup by
-`NewConfigFromEnv` (`internal/server/config.go`). There are no command-line flags and no
-configuration file.
+Blip is configured entirely through environment variables, read once at startup. Every variable
+except `LOG_LEVEL` is read by `NewConfigFromEnv` (`internal/server/config.go`); `LOG_LEVEL` is read
+separately by `LogLevelFromEnv` (`internal/server/logging.go`), because the logger has to exist
+before the rest of the configuration can be parsed and warned about. There are no command-line flags
+and no configuration file.
 
 An annotated template lives in [`.env.example`](../../.env.example). The process does not read
 `.env` itself — use your shell, `docker compose`, or a systemd unit to load it.
@@ -37,7 +39,9 @@ Specifics:
   Duration strings such as `500ms` or `1s` are **invalid** and fall back to the default.
 - `LOG_LEVEL` accepts the names `log/slog` understands, case-insensitively, including offsets such
   as `debug-2`. Anything unrecognized falls back to `info` silently, since the logger does not exist
-  yet at the point the level is read.
+  yet at the point the level is read. It is read twice with the same result: once when the `server`
+  package initializes, so package-level code has a logger at all, and once in `main` to install the
+  process-wide default.
 
 ### Origin matching
 

@@ -37,9 +37,7 @@ type Client struct {
 // to handle message queuing.
 func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 	cfg := currentSnapshot().cfg
-	if conn != nil {
-		conn.SetReadLimit(cfg.MaxMessageSize)
-	}
+	conn.SetReadLimit(cfg.MaxMessageSize)
 
 	return &Client{
 		conn:           conn,
@@ -52,19 +50,15 @@ func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 	}
 }
 
-// GetSendChan returns the client's send channel for reading outgoing messages.
+// SendChan returns the client's send channel for reading outgoing messages.
 // This channel is read-only from the caller's perspective.
-func (c *Client) GetSendChan() <-chan []byte {
+func (c *Client) SendChan() <-chan []byte {
 	return c.send
 }
 
 // setupReadConnection configures read deadlines and the pong handler for the
 // WebSocket connection.
 func (c *Client) setupReadConnection() {
-	if c.conn == nil {
-		return
-	}
-
 	if err := c.conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
 		log().Warn("failed to set initial read deadline", "addr", c.addr, "error", err)
 	}
@@ -162,10 +156,6 @@ func (c *Client) handleReadMessage() bool {
 func (c *Client) readPump() {
 	defer c.cleanupReadPump()
 
-	if c.conn == nil {
-		return
-	}
-
 	c.setupReadConnection()
 
 	for !c.handleReadMessage() { //nolint:revive // empty body is intentional
@@ -198,10 +188,6 @@ func (c *Client) processWriteEvent(ticker *time.Ticker) bool {
 
 // closeConnection safely closes the WebSocket connection with proper error handling.
 func (c *Client) closeConnection() {
-	if c.conn == nil {
-		return
-	}
-
 	if err := c.conn.Close(); err != nil && !isExpectedCloseError(err) {
 		log().Debug("error closing connection", "addr", c.addr, "error", err)
 	}
@@ -210,10 +196,6 @@ func (c *Client) closeConnection() {
 // handleMessage processes outgoing messages and returns false if the connection
 // should be closed.
 func (c *Client) handleMessage(message []byte, ok bool) bool {
-	if c.conn == nil {
-		return false
-	}
-
 	if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
 		log().Debug("error setting write deadline", "addr", c.addr, "error", err)
 		return false
@@ -302,10 +284,6 @@ func (c *Client) closeWriter(w io.Closer) bool {
 
 // handlePing sends a ping frame to keep the connection alive.
 func (c *Client) handlePing() bool {
-	if c.conn == nil {
-		return false
-	}
-
 	if err := c.conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
 		log().Debug("error setting ping write deadline", "addr", c.addr, "error", err)
 		return false

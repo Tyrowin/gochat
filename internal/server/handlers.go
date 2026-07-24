@@ -14,8 +14,12 @@ import (
 //go:embed testpage.html
 var testPageHTML []byte
 
+// HealthResponse is the exact body served by [HealthHandler]. It is exported so
+// tests assert against the served text rather than a copy of it.
+const HealthResponse = "Blip server is running!"
+
 var (
-	healthResponse = []byte("Blip server is running!")
+	healthResponse = []byte(HealthResponse)
 
 	// testPageLength is precomputed so the handler does no per-request work
 	// beyond writing the embedded bytes.
@@ -70,7 +74,7 @@ func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 // It validates that the request uses the GET method, upgrades the HTTP connection
 // to WebSocket, creates a new Client instance, and starts the client's read/write pumps.
 func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
-	webSocketHandlerForHub(GetHub()).ServeHTTP(w, r)
+	webSocketHandlerForHub(GlobalHub()).ServeHTTP(w, r)
 }
 
 // writeStatic serves a fixed body whose length is known ahead of time, skipping

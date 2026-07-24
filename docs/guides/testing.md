@@ -10,11 +10,12 @@ through its exported API only.
 ```
 test/
 ├── unit/                    # package unit — components in isolation
-│   ├── error_handling_test.go   # read/write error paths, panic recovery
+│   ├── error_handling_test.go   # read/write error paths, registration accounting
 │   ├── handlers_test.go         # health handler, routing, server construction
-│   ├── hub_test.go              # hub channels, registration, broadcast, shutdown
+│   ├── hub_test.go              # hub channels, client count, shutdown lifecycle
 │   └── websocket_test.go        # upgrader config, method and header validation
 ├── integration/             # package integration — real servers over real sockets
+│   ├── setup_test.go            # shared plumbing: test servers, dialing, assertions
 │   ├── multiclient_test.go      # many clients exchanging messages concurrently
 │   ├── security_test.go         # origin validation, size limits, rate limiting
 │   ├── server_test.go           # health endpoint, timeouts, full startup path
@@ -44,8 +45,9 @@ go test -v -race ./test/unit/...                # one package
 go test -v -race -run TestHubShutdown ./test/unit  # one test
 ```
 
-The integration suite takes roughly 12 seconds because several tests wait on real timeouts; the unit
-suite finishes in about 1.5 seconds. Always keep `-race` on — the hub, the client pumps, and the
+The integration suite takes roughly 7.5 seconds — what remains is a handful of tests that wait on
+real timeouts, such as the rate-limiter refill; the unit suite finishes in about 2 seconds. Always
+keep `-race` on — the hub, the client pumps, and the
 config store are all concurrent.
 
 ## Coverage
@@ -60,25 +62,35 @@ These pass `-coverpkg=./cmd/...,./internal/...` so coverage is attributed to the
 rather than to the test packages, and print `go tool cover -func` at the end. Open `coverage.html`
 in a browser for the annotated source.
 
-Measured **71.0% of statements** across `internal/server` on 2026-07-23 (unit 56.1%, integration
-68.2%). CI collects coverage and uploads it to Codecov but does not enforce a threshold — nothing
-fails a build for dropping coverage.
+`make test-coverage` measured **70.4% of statements** on 2026-07-24 (unit 56.6%, integration 61.1%).
+That figure spans `./cmd/...` and `./internal/...` together, and `cmd/server` has no tests of its
+own, so `internal/server` alone measures higher — 76.3% with `-coverpkg=./internal/...`. The same
+number appears in the [README](../../README.md#status); update both together. CI collects coverage
+and uploads it to Codecov but does not enforce a threshold — nothing fails a build for dropping
+coverage.
 
 ## Helpers
 
 `test/testhelpers` provides the shared plumbing. Use it instead of hand-rolling servers and dials:
 
-| Helper                                       | Purpose                                             |
-| -------------------------------------------- | --------------------------------------------------- |
-| `CreateTestServer(handler)`                  | `httptest` server for a handler                      |
-| `CreateTestServerWithConfig(...)`            | Same, with a specific `server.Config` applied         |
-| `ConnectWebSocket(url)`                      | Dial a `ws://` URL and return the connection          |
-| `SendMessage(conn, content)`                 | Send `{"content": ...}`                               |
-| `ReceiveMessage(conn)`                       | Read one JSON message into a map                      |
-| `SendRawMessage` / `ReceiveRawMessage`       | Frame-level access for protocol edge cases            |
-| `MakeRequest(t, method, url)`                | Plain HTTP request                                    |
-| `AssertStatusCode` / `AssertContentType` / `AssertMessageContent` | Common assertions          |
-| `CloseWebSocket(conn)`                       | Close cleanly                                         |
+| Helper                                            | Purpose                                                             |
+| ------------------------------------------------- | ------------------------------------------------------------------- |
+| `CreateTestServer(t, handler)`                    | `httptest` server for a handler, closed when the test ends           |
+| `CreateTestServerWithTimeouts(t, handler, ServerTimeouts)` | Same, with explicit read/write/idle HTTP timeouts           |
+| `WaitFor(t, timeout, what, cond)`                 | Poll a condition to a deadline — use instead of `time.Sleep`         |
+| `WaitForServer(t, url, timeout)`                  | Block until a just-started server accepts requests                   |
+| `Dial(t, wsURL, origin)`                          | Dial a `ws://` URL from a given `Origin`, closed when the test ends  |
+| `DialPair(t, wsURL, origin)`                      | The sender/receiver pair delivery tests need                         |
+| `ConnectWebSocket(url)`                           | Dial with the default dev origin; returns an error instead of failing |
+| `SendMessage(conn, content)`                      | Send `{"content": ...}`                                              |
+| `CloseWebSocket(conn)`                            | Close cleanly                                                        |
+| `MakeRequest(t, method, url)`                     | HTTP request, fully read; returns a `Response` with the body closed  |
+| `AssertStatusCode` / `AssertContentType` / `AssertBody` | Common assertions over a `Response`                            |
+
+The `integration` package layers its own helpers on top in `setup_test.go` — `newTestServer` (a
+server backed by a hub of its own), `dial` / `dialPair` / `dialClients` (which return only once the
+hub has registered every connection), and `waitForUnregister`. Prefer those inside that package:
+they make client-count assertions exact.
 
 ## Writing tests
 
@@ -89,10 +101,15 @@ Follow the conventions already in the suite:
 - Use table-driven subtests with `t.Run` for multiple scenarios of one behavior.
 - Cover the failure path, not just the happy one — most bugs in this codebase live in error handling
   and shutdown ordering.
-- Reset shared state. The hub and the active config are package-level globals; use
-  `CreateTestServerWithConfig` and `server.SetConfig(nil)` rather than mutating global state directly
-  and leaving it changed.
-- Prefer waiting on a channel or polling with a deadline over `time.Sleep` for synchronization.
+- Reset shared state. The active config is a package-level global and `server.GlobalHub()` is
+  process-wide; give a test its own hub with `server.SetupRoutesWithHub` (integration tests get this
+  from `newTestServer`) and restore the config with `server.SetConfig(nil)` rather than mutating
+  global state and leaving it changed.
+- Prefer waiting on a channel or polling with a deadline over `time.Sleep` for synchronization. The
+  hub's `ClientCount()` is answered by its own event loop, so a reply proves every registration,
+  unregistration, and broadcast queued before it has been processed — that is the barrier to wait on,
+  via `testhelpers.WaitFor`. A `time.Sleep` is only acceptable when elapsed wall-clock time is the
+  behavior under test, such as waiting for the rate limiter to refill; say so in a comment.
 
 ### Benchmarks
 

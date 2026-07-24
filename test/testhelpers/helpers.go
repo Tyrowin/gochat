@@ -1,12 +1,12 @@
 // Package testhelpers provides common utilities and helper functions for testing the Blip server.
 //
 // This package contains reusable test utilities that are shared across unit and integration tests.
-// It provides functions for creating test servers, making HTTP requests, and asserting response
-// properties to reduce code duplication in test files.
+// It provides functions for creating test servers, dialing WebSocket connections, waiting on
+// conditions, and asserting response properties to reduce code duplication in test files.
 package testhelpers
 
 import (
-	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,35 +15,87 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// CreateTestServer creates a test HTTP server with the given handler.
-// It returns a running httptest.Server that should be closed after use.
-func CreateTestServer(handler http.Handler) *httptest.Server {
-	return httptest.NewServer(handler)
+// pollInterval is how often WaitFor re-evaluates its condition.
+const pollInterval = 5 * time.Millisecond
+
+// ServerTimeouts groups the HTTP timeouts a test server overrides. They travel
+// together everywhere, so they are one value rather than three parameters.
+type ServerTimeouts struct {
+	Read  time.Duration
+	Write time.Duration
+	Idle  time.Duration
 }
 
-// CreateTestServerWithConfig creates a test server with custom timeout configuration.
-// It allows specifying custom read, write, and idle timeouts for testing server behavior
-// under different timeout conditions.
-func CreateTestServerWithConfig(
-	handler http.Handler,
-	readTimeout, writeTimeout, idleTimeout time.Duration,
-) *httptest.Server {
-	server := &http.Server{
+// CreateTestServer creates a test HTTP server with the given handler.
+// It returns a running httptest.Server that is closed when the test ends.
+func CreateTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// CreateTestServerWithTimeouts creates a test server with custom HTTP timeouts,
+// for exercising server behavior under different timeout conditions.
+func CreateTestServerWithTimeouts(t *testing.T, handler http.Handler, timeouts ServerTimeouts) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewUnstartedServer(handler)
+	server.Config = &http.Server{
 		Handler:      handler,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-		IdleTimeout:  idleTimeout,
+		ReadTimeout:  timeouts.Read,
+		WriteTimeout: timeouts.Write,
+		IdleTimeout:  timeouts.Idle,
+	}
+	server.Start()
+	t.Cleanup(server.Close)
+	return server
+}
+
+// WaitFor polls cond until it reports true, failing the test if timeout elapses
+// first. Use it instead of sleeping for a duration that "should be enough".
+func WaitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(pollInterval)
 	}
 
-	testServer := httptest.NewUnstartedServer(handler)
-	testServer.Config = server
-	testServer.Start()
-	return testServer
+	t.Fatalf("timed out after %v waiting for %s", timeout, what)
+}
+
+// WaitForServer polls url until it answers, so a test never races the listener
+// that a just-started server is still opening.
+func WaitForServer(t *testing.T, url string, timeout time.Duration) {
+	t.Helper()
+
+	client := &http.Client{Timeout: pollInterval * 10}
+	WaitFor(t, timeout, "server at "+url+" to accept requests", func() bool {
+		resp, err := client.Get(url)
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return true
+	})
+}
+
+// Response is a fully read HTTP response. MakeRequest closes the body before
+// building one, so no test is left holding an open body.
+type Response struct {
+	StatusCode  int
+	ContentType string
+	Body        string
 }
 
 // AssertStatusCode checks if the HTTP response has the expected status code.
 // It fails the test with a descriptive error message if the status codes don't match.
-func AssertStatusCode(t *testing.T, resp *http.Response, expected int) {
+func AssertStatusCode(t *testing.T, resp Response, expected int) {
 	t.Helper()
 	if resp.StatusCode != expected {
 		t.Errorf("Expected status code %d, got %d", expected, resp.StatusCode)
@@ -52,31 +104,25 @@ func AssertStatusCode(t *testing.T, resp *http.Response, expected int) {
 
 // AssertContentType checks if the HTTP response has the expected Content-Type header.
 // It fails the test with a descriptive error message if the content types don't match.
-func AssertContentType(t *testing.T, resp *http.Response, expected string) {
+func AssertContentType(t *testing.T, resp Response, expected string) {
 	t.Helper()
-	contentType := resp.Header.Get("Content-Type")
-	if contentType != expected {
-		t.Errorf("Expected content type %s, got %s", expected, contentType)
+	if resp.ContentType != expected {
+		t.Errorf("Expected content type %s, got %s", expected, resp.ContentType)
 	}
 }
 
-// CreateHealthHandler creates the standard health check handler for testing purposes.
-// It returns an HTTP handler function that responds with a health check message,
-// including proper error handling for write operations.
-func CreateHealthHandler() http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		if _, err := w.Write([]byte("Blip server is running!")); err != nil {
-			// In a real application, you might want to log this error
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		}
-	})
+// AssertBody checks that the response body is exactly the expected text.
+func AssertBody(t *testing.T, resp Response, expected string) {
+	t.Helper()
+	if resp.Body != expected {
+		t.Errorf("Expected body %q, got %q", expected, resp.Body)
+	}
 }
 
-// MakeRequest creates and executes an HTTP request, returning the response.
-// It includes a 5-second timeout and fails the test if the request cannot be
-// created or executed successfully.
-func MakeRequest(t *testing.T, method, url string) *http.Response {
+// MakeRequest creates and executes an HTTP request with a 5-second timeout,
+// reads the whole response, and closes the body. It fails the test if the
+// request cannot be created, executed, or read.
+func MakeRequest(t *testing.T, method, url string) Response {
 	t.Helper()
 
 	client := &http.Client{
@@ -92,18 +138,28 @@ func MakeRequest(t *testing.T, method, url string) *http.Response {
 	if err != nil {
 		t.Fatalf("Failed to make request: %v", err)
 	}
+	defer func() { _ = resp.Body.Close() }()
 
-	return resp
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Failed to read response body: %v", err)
+	}
+
+	return Response{
+		StatusCode:  resp.StatusCode,
+		ContentType: resp.Header.Get("Content-Type"),
+		Body:        string(body),
+	}
 }
 
-// ConnectWebSocket creates a WebSocket connection to the specified URL.
-// It returns the connection or an error if connection fails.
+// ConnectWebSocket creates a WebSocket connection to the specified URL using the
+// default development origin. It returns the connection or an error if the
+// handshake fails; the caller owns closing it.
 func ConnectWebSocket(url string) (*websocket.Conn, error) {
 	dialer := websocket.Dialer{
 		HandshakeTimeout: 5 * time.Second,
 	}
 
-	// Set a proper origin header for testing
 	headers := http.Header{}
 	headers.Set("Origin", "http://localhost:8080")
 
@@ -114,29 +170,41 @@ func ConnectWebSocket(url string) (*websocket.Conn, error) {
 	return conn, err
 }
 
+// Dial opens a WebSocket connection to wsURL presenting origin, failing the test
+// if the handshake does not succeed. The connection is closed when the test ends.
+func Dial(t *testing.T, wsURL, origin string) *websocket.Conn {
+	t.Helper()
+
+	header := http.Header{}
+	if origin != "" {
+		header.Set("Origin", origin)
+	}
+
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if resp != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("Failed to dial %s from origin %q: %v", wsURL, origin, err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+
+	return conn
+}
+
+// DialPair opens the sender/receiver pair that message-delivery tests need,
+// both from origin. Both connections are closed when the test ends.
+func DialPair(t *testing.T, wsURL, origin string) (sender, receiver *websocket.Conn) {
+	t.Helper()
+
+	return Dial(t, wsURL, origin), Dial(t, wsURL, origin)
+}
+
 // SendMessage sends a JSON message over the WebSocket connection.
 // It marshals the message with a "content" field and sends it as JSON.
 func SendMessage(conn *websocket.Conn, content string) error {
 	message := map[string]string{"content": content}
 	return conn.WriteJSON(message)
-}
-
-// ReceiveMessage reads a JSON message from the WebSocket connection.
-// It returns the message content or an error if reading fails.
-func ReceiveMessage(conn *websocket.Conn) (map[string]interface{}, error) {
-	var message map[string]interface{}
-	err := conn.ReadJSON(&message)
-	return message, err
-}
-
-// SendRawMessage sends a raw byte message over the WebSocket connection.
-func SendRawMessage(conn *websocket.Conn, messageType int, data []byte) error {
-	return conn.WriteMessage(messageType, data)
-}
-
-// ReceiveRawMessage reads a raw message from the WebSocket connection.
-func ReceiveRawMessage(conn *websocket.Conn) (int, []byte, error) {
-	return conn.ReadMessage()
 }
 
 // CloseWebSocket gracefully closes a WebSocket connection.
@@ -147,31 +215,4 @@ func CloseWebSocket(conn *websocket.Conn) error {
 		return err
 	}
 	return conn.Close()
-}
-
-// AssertMessageContent checks if the received message has the expected content.
-func AssertMessageContent(t *testing.T, message map[string]interface{}, expectedContent string) {
-	t.Helper()
-
-	content, ok := message["content"]
-	if !ok {
-		t.Error("Message does not contain 'content' field")
-		return
-	}
-
-	contentStr, ok := content.(string)
-	if !ok {
-		t.Error("Message content is not a string")
-		return
-	}
-
-	if contentStr != expectedContent {
-		t.Errorf("Expected content %q, got %q", expectedContent, contentStr)
-	}
-}
-
-// CreateJSONMessage creates a JSON-encoded message with the given content.
-func CreateJSONMessage(content string) ([]byte, error) {
-	message := map[string]string{"content": content}
-	return json.Marshal(message)
 }
