@@ -28,73 +28,65 @@ const (
 // TestMultipleClientsMessageExchange tests complex message exchange scenarios
 // between multiple clients connected to the hub.
 func TestMultipleClientsMessageExchange(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
-	configureServerForTest(t, testServer.URL, nil)
-
-	wsURL := buildWebSocketURL(t, testServer.URL)
-
 	t.Run("Five clients sending and receiving messages", func(t *testing.T) {
-		testFiveClientsSendingAndReceiving(t, wsURL, testServer.URL)
+		testServer, hub := newMulticlientServer(t)
+		testFiveClientsSendingAndReceiving(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
 
 	t.Run("Clients joining and leaving dynamically", func(t *testing.T) {
-		testDynamicJoiningAndLeaving(t, wsURL, testServer.URL)
+		testServer, hub := newMulticlientServer(t)
+		testDynamicJoiningAndLeaving(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
 
 	t.Run("Rapid message exchange between clients", func(t *testing.T) {
-		testRapidMessageExchange(t, wsURL, testServer.URL)
+		testServer, hub := newMulticlientServer(t)
+		testRapidMessageExchange(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
+}
+
+// newMulticlientServer starts a server whose rate limit is wide enough that the
+// multi-client tests measure fan-out rather than throttling — rate limiting has
+// its own coverage in security_test.go.
+func newMulticlientServer(t *testing.T) (*httptest.Server, *server.Hub) {
+	t.Helper()
+
+	testServer, hub := newTestServer(t)
+	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
+		cfg.RateLimit = server.RateLimitConfig{Burst: 1000, RefillInterval: time.Second}
+	})
+
+	return testServer, hub
 }
 
 // TestMultipleClientsConcurrentOperations tests concurrent operations with multiple clients.
 func TestMultipleClientsConcurrentOperations(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
-	configureServerForTest(t, testServer.URL, nil)
-
-	wsURL := buildWebSocketURL(t, testServer.URL)
-
 	t.Run("Concurrent client connections and disconnections", func(t *testing.T) {
-		testConcurrentConnectionsAndDisconnections(t, wsURL, testServer.URL)
+		testServer, _ := newMulticlientServer(t)
+		testConcurrentConnectionsAndDisconnections(t, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
 
 	t.Run("Concurrent message sending from multiple clients", func(t *testing.T) {
-		testConcurrentMessageSending(t, wsURL, testServer.URL)
+		testServer, hub := newMulticlientServer(t)
+		testConcurrentMessageSending(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
 }
 
 // TestMultipleClientsEdgeCases tests edge cases with multiple clients.
 func TestMultipleClientsEdgeCases(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
-	configureServerForTest(t, testServer.URL, nil)
-
-	wsURL := buildWebSocketURL(t, testServer.URL)
-
 	t.Run("Single client broadcasting to itself", func(t *testing.T) {
-		connections := connectMultipleClients(t, wsURL, testServer.URL, 1)
-		defer closeAllConnections(t, connections)
-		time.Sleep(50 * time.Millisecond)
+		testServer, hub := newMulticlientServer(t)
+		conn := dial(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 
 		// Send a message (should not receive it back)
-		sendMessageFromClient(t, connections[0], "Self message")
-		expectNoMessage(t, connections[0], 300*time.Millisecond)
+		sendMessageFromClient(t, conn, "Self message")
+		expectNoMessage(t, conn, 300*time.Millisecond)
 	})
 
 	t.Run("All clients disconnecting simultaneously", func(t *testing.T) {
+		testServer, hub := newMulticlientServer(t)
+
 		const numClients = 5
-		connections := connectMultipleClients(t, wsURL, testServer.URL, numClients)
-		time.Sleep(50 * time.Millisecond)
+		connections := dialClients(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL, numClients)
 
 		var wg sync.WaitGroup
 		wg.Add(numClients)
@@ -109,13 +101,12 @@ func TestMultipleClientsEdgeCases(t *testing.T) {
 		}
 
 		wg.Wait()
-		time.Sleep(100 * time.Millisecond)
+		waitForUnregister(t, hub, 0)
 	})
 
 	t.Run("Client sending empty content messages", func(t *testing.T) {
-		connections := connectMultipleClients(t, wsURL, testServer.URL, 2)
-		defer closeAllConnections(t, connections)
-		time.Sleep(50 * time.Millisecond)
+		testServer, hub := newMulticlientServer(t)
+		connections := dialClients(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL, 2)
 
 		// Send message with empty content
 		sendMessageFromClient(t, connections[0], "")
@@ -126,9 +117,8 @@ func TestMultipleClientsEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Clients sending very long content", func(t *testing.T) {
-		connections := connectMultipleClients(t, wsURL, testServer.URL, 2)
-		defer closeAllConnections(t, connections)
-		time.Sleep(50 * time.Millisecond)
+		testServer, hub := newMulticlientServer(t)
+		connections := dialClients(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL, 2)
 
 		// Send a long message (but within size limit)
 		longContent := strings.Repeat("X", 50)
@@ -155,23 +145,17 @@ func drainMessages(conn *websocket.Conn, timeout time.Duration) {
 
 // testFiveClientsSendingAndReceiving tests that five clients can send messages
 // and all other clients receive them correctly.
-func testFiveClientsSendingAndReceiving(t *testing.T, wsURL, serverURL string) {
+func testFiveClientsSendingAndReceiving(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
 	t.Helper()
 
 	const numClients = 5
-	connections := connectMultipleClients(t, wsURL, serverURL, numClients)
-	defer closeAllConnections(t, connections)
-
-	// Give clients time to register and start their read/write pumps
-	time.Sleep(200 * time.Millisecond)
+	connections := dialClients(t, hub, wsURL, serverURL, numClients)
 
 	// Each client sends a unique message
 	sendMessagesFromAllClients(t, connections, numClients)
 
-	// Wait for all messages to be delivered
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify each client received all messages except their own
+	// Verify each client received all messages except their own. The reads
+	// carry their own deadlines, so nothing here has to guess a delivery delay.
 	verifyAllClientsReceivedMessages(t, connections, numClients)
 }
 
@@ -182,7 +166,6 @@ func sendMessagesFromAllClients(t *testing.T, connections []*websocket.Conn, num
 	for i := range numClients {
 		messageContent := fmt.Sprintf(msgFromClientTemplate, i)
 		sendMessageFromClient(t, connections[i], messageContent)
-		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -279,41 +262,35 @@ func verifyDidNotReceiveOwnMessage(t *testing.T, messagesReceived map[string]boo
 
 // testDynamicJoiningAndLeaving tests clients connecting and disconnecting
 // dynamically while messages are being sent.
-func testDynamicJoiningAndLeaving(t *testing.T, wsURL, serverURL string) {
+func testDynamicJoiningAndLeaving(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
 	t.Helper()
 
 	// Start with 3 clients
-	connections := connectMultipleClients(t, wsURL, serverURL, 3)
-	time.Sleep(200 * time.Millisecond) // Wait for registration and pump startup
+	connections := dialClients(t, hub, wsURL, serverURL, 3)
 
 	// Client 0 sends a message
 	sendMessageFromClient(t, connections[0], msgInitial)
-	time.Sleep(150 * time.Millisecond) // Wait for broadcast
 
 	// Verify clients 1 and 2 received the message
 	verifyClientReceivesMessage(t, connections[1], msgInitial, 1)
 	verifyClientReceivesMessage(t, connections[2], msgInitial, 2)
 
-	// Client 1 disconnects
+	// Client 1 disconnects, and the hub confirms it is gone before the next send
 	closeClientConnection(t, connections, 1)
-	time.Sleep(150 * time.Millisecond) // Wait for unregistration
+	waitForUnregister(t, hub, 2)
 
 	// Client 0 sends another message (only client 2 should receive)
 	sendMessageFromClient(t, connections[0], "After client 1 left")
-	time.Sleep(150 * time.Millisecond) // Wait for broadcast
-
 	verifyClientReceivesMessage(t, connections[2], "After client 1 left", 2)
 
 	// New client joins
-	newClient := connectNewClient(t, wsURL, serverURL)
-	defer func() { _ = newClient.Close() }()
-	time.Sleep(200 * time.Millisecond) // Wait for registration and pump startup
+	newClient := dial(t, hub, wsURL, serverURL)
 
 	// Client 2 sends a message (both client 0 and new client should receive)
 	sendMessageFromClient(t, connections[2], msgAfterNewClientJoined)
-	time.Sleep(300 * time.Millisecond) // Wait longer for broadcast
 
-	// Use a more flexible verification that handles batched messages and retries
+	// Client 0 may still have the earlier broadcast queued, so it needs the
+	// variant that scans past messages it has already been sent.
 	verifyClientReceivesMessageFlexible(t, connections[0], msgAfterNewClientJoined, 0)
 	verifyClientReceivesMessage(t, newClient, msgAfterNewClientJoined, 3)
 	expectNoMessage(t, connections[2], 200*time.Millisecond)
@@ -424,40 +401,26 @@ func messageContainsExpectedContent(message []byte, expectedContent string) bool
 
 // testRapidMessageExchange tests multiple clients sending messages rapidly
 // and verifies all messages are received correctly.
-func testRapidMessageExchange(t *testing.T, wsURL, serverURL string) {
+func testRapidMessageExchange(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
 	t.Helper()
 
 	const numClients = 3
-	connections := connectMultipleClients(t, wsURL, serverURL, numClients)
-	defer closeAllConnections(t, connections)
-	time.Sleep(200 * time.Millisecond) // Wait for registration and pump startup
+	connections := dialClients(t, hub, wsURL, serverURL, numClients)
 
 	// Send multiple messages rapidly from each client
 	const messagesPerClient = 5
 	sendRapidMessages(t, connections, messagesPerClient)
 
-	// Give time for all broadcasts to complete
-	// With 3 clients and 5 messages each, we have 15 messages total
-	// Each message needs to be broadcast to 2 other clients
-	// Wait longer to ensure all messages are processed
-	time.Sleep(1500 * time.Millisecond)
-
-	// Verify all clients received the expected number of messages (allow some tolerance for timing)
+	// Every message is delivered or the sender is dropped, so the count is
+	// exact: no client should be missing any of the other clients' messages.
 	expectedMessagesPerClient := messagesPerClient * (numClients - 1)
 
 	for clientID := range numClients {
 		receivedCount := countReceivedMessages(t, connections[clientID], expectedMessagesPerClient)
 
-		// Allow a small tolerance (e.g., at least 80% of messages should be received)
-		minExpected := int(float64(expectedMessagesPerClient) * 0.8)
-
-		if receivedCount < minExpected {
-			t.Errorf("Client %d: expected at least %d messages (80%% of %d), got %d",
-				clientID, minExpected, expectedMessagesPerClient, receivedCount)
-		} else if receivedCount != expectedMessagesPerClient {
-			t.Logf("Client %d: received %d/%d messages (%.0f%%)",
-				clientID, receivedCount, expectedMessagesPerClient,
-				float64(receivedCount)/float64(expectedMessagesPerClient)*100)
+		if receivedCount != expectedMessagesPerClient {
+			t.Errorf("Client %d: expected %d messages, got %d",
+				clientID, expectedMessagesPerClient, receivedCount)
 		}
 	}
 }
@@ -472,8 +435,6 @@ func sendRapidMessages(t *testing.T, connections []*websocket.Conn, messagesPerC
 			content := fmt.Sprintf("Round %d from client %d", round, clientID)
 			sendMessageFromClient(t, connections[clientID], content)
 		}
-		// Delay between rounds to prevent overwhelming the hub
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -562,18 +523,6 @@ func closeRemainingConnections(t *testing.T, connections []*websocket.Conn) {
 	}
 }
 
-// connectNewClient establishes a new WebSocket connection and returns it.
-func connectNewClient(t *testing.T, wsURL, serverURL string) *websocket.Conn {
-	t.Helper()
-
-	newClient, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
-	if err != nil {
-		t.Fatalf("Failed to connect new client: %v", err)
-	}
-	_ = resp.Body.Close()
-	return newClient
-}
-
 // testConcurrentConnectionsAndDisconnections tests multiple clients connecting
 // and disconnecting concurrently.
 func testConcurrentConnectionsAndDisconnections(t *testing.T, wsURL, serverURL string) {
@@ -636,13 +585,11 @@ func attemptToReadMessages(conn *websocket.Conn, timeout time.Duration) {
 }
 
 // testConcurrentMessageSending tests multiple clients sending messages concurrently.
-func testConcurrentMessageSending(t *testing.T, wsURL, serverURL string) {
+func testConcurrentMessageSending(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
 	t.Helper()
 
 	const numClients = 5
-	connections := connectMultipleClients(t, wsURL, serverURL, numClients)
-	defer closeAllConnections(t, connections)
-	time.Sleep(100 * time.Millisecond)
+	connections := dialClients(t, hub, wsURL, serverURL, numClients)
 
 	errors := sendMessagesFromAllClientsConcurrently(t, connections)
 	reportErrors(t, errors)
@@ -685,13 +632,13 @@ func sendMultipleMessagesFromClient(t *testing.T, conn *websocket.Conn, clientID
 		if err := conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, content)); err != nil {
 			errors <- fmt.Errorf("client %d msg %d: send failed: %w", clientID, msgNum, err)
 		}
-		time.Sleep(10 * time.Millisecond) // Small delay between messages
 	}
 }
 
-// drainAllClientMessages drains messages from all client connections.
+// drainAllClientMessages drains messages from all client connections. Each drain
+// reads until its own deadline passes with nothing left to read, so it does not
+// need a delay in front of it.
 func drainAllClientMessages(connections []*websocket.Conn) {
-	time.Sleep(500 * time.Millisecond)
 	for i := range connections {
 		drainMessages(connections[i], 1*time.Second)
 	}

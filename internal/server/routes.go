@@ -7,7 +7,7 @@ import "net/http"
 // SetupRoutes configures and returns an HTTP ServeMux with all application routes.
 // It sets up handlers for health check, WebSocket endpoint, and test page.
 func SetupRoutes() *http.ServeMux {
-	return SetupRoutesWithHub(GetHub())
+	return SetupRoutesWithHub(GlobalHub())
 }
 
 // SetupRoutesWithHub configures and returns an HTTP ServeMux bound to the provided hub.

@@ -2,298 +2,144 @@ package unit
 
 import (
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"strings"
+	"net"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/maltemindedal/blip/internal/server"
+	"github.com/maltemindedal/blip/test/testhelpers"
 )
 
-const (
-	errMsgFailedToConnect = "Failed to connect: %v"
-	errMsgFailedToClose   = "Failed to close connection: %v"
-)
+const errMsgFailedToClose = "Failed to close connection: %v"
 
-// TestClientErrorHandling verifies that client properly handles various error conditions
-func TestClientErrorHandling(t *testing.T) {
-	tests := []struct {
-		name        string
-		errorType   error
-		expectedLog string
-		shouldBreak bool
-	}{
-		{
-			name:        "ReadLimit error",
-			errorType:   websocket.ErrReadLimit,
-			expectedLog: "exceeded maximum size",
-			shouldBreak: true,
-		},
-		{
-			name:        "EOF error",
-			errorType:   io.EOF,
-			expectedLog: "connection closed",
-			shouldBreak: true,
-		},
-		{
-			name:        "Normal close",
-			errorType:   &websocket.CloseError{Code: websocket.CloseNormalClosure},
-			expectedLog: "disconnected",
-			shouldBreak: true,
-		},
-	}
+// errorTestServer starts a server backed by a hub of its own, so a test can
+// observe exactly its own clients rather than whatever the global hub holds.
+// It returns the ws:// URL of the endpoint and that hub.
+func errorTestServer(t *testing.T) (wsURL string, hub *server.Hub) {
+	t.Helper()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Note: This is a simplified test - full implementation would require
-			// mocking the WebSocket connection to inject specific errors
-			t.Logf("Test case: %s - would verify error %v is handled correctly", tt.name, tt.errorType)
-		})
-	}
-}
+	hub = startHub(t)
+	httpServer := testhelpers.CreateTestServer(t, server.SetupRoutesWithHub(hub))
 
-// TestHubShutdownContext verifies that hub respects shutdown context
-func TestHubShutdownContext(t *testing.T) {
-	hub := server.NewHub()
-
-	// Start hub
-	hubStopped := make(chan struct{})
-	go func() {
-		hub.Run()
-		close(hubStopped)
-	}()
-
-	// Give hub time to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Trigger shutdown
-	err := hub.Shutdown(2 * time.Second)
-	if err != nil {
-		t.Errorf("Shutdown returned error: %v", err)
-	}
-
-	// Verify hub actually stopped
-	select {
-	case <-hubStopped:
-		// Success - hub stopped
-	case <-time.After(3 * time.Second):
-		t.Error("Hub did not stop after shutdown")
-	}
-}
-
-// TestHubShutdownTimeout verifies timeout behavior
-func TestHubShutdownTimeout(t *testing.T) {
-	hub := server.NewHub()
-	go hub.Run()
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Use a very short timeout
-	start := time.Now()
-	_ = hub.Shutdown(50 * time.Millisecond)
-	elapsed := time.Since(start)
-
-	// Should not take much longer than the timeout
-	if elapsed > 200*time.Millisecond {
-		t.Errorf("Shutdown took %v, expected around 50ms", elapsed)
-	}
-}
-
-// TestWriteErrorHandling verifies write operations handle errors properly
-func TestWriteErrorHandling(t *testing.T) {
-	// Create test server
-	server.StartHub()
-	s := httptest.NewServer(server.SetupRoutes())
-	defer s.Close()
-
-	// Configure allowed origins
 	cfg := server.NewConfig()
-	cfg.AllowedOrigins = []string{s.URL}
+	cfg.AllowedOrigins = []string{httpServer.URL}
 	server.SetConfig(cfg)
-	defer server.SetConfig(nil)
+	t.Cleanup(func() { server.SetConfig(nil) })
 
-	// Convert http to ws
-	url := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
-
-	// Connect with proper origin header
-	dialer := websocket.DefaultDialer
-	header := http.Header{}
-	header.Set("Origin", s.URL)
-
-	ws, resp, err := dialer.Dial(url, header)
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
+	parsed, err := url.Parse(httpServer.URL)
 	if err != nil {
-		t.Fatalf(errMsgFailedToConnect, err)
+		t.Fatalf("Failed to parse test server URL: %v", err)
+	}
+	parsed.Scheme = "ws"
+	parsed.Path = "/ws"
+
+	return parsed.String(), hub
+}
+
+// TestWriteAfterCloseFails verifies that writing to a connection the client has
+// already closed reports an error rather than silently succeeding.
+func TestWriteAfterCloseFails(t *testing.T) {
+	wsURL, _ := errorTestServer(t)
+	conn := testhelpers.Dial(t, wsURL, originOf(t, wsURL))
+
+	if err := testhelpers.SendMessage(conn, "test"); err != nil {
+		t.Fatalf("Failed to write message: %v", err)
 	}
 
-	// Send a valid message
-	err = ws.WriteJSON(map[string]string{"content": "test"})
-	if err != nil {
-		t.Errorf("Failed to write message: %v", err)
-	}
-
-	// Close the connection to trigger errors on subsequent writes
-	if err := ws.Close(); err != nil {
+	if err := conn.Close(); err != nil {
 		t.Logf(errMsgFailedToClose, err)
 	}
 
-	// Try to write after close - should fail gracefully
-	err = ws.WriteJSON(map[string]string{"content": "test2"})
-	if err == nil {
-		t.Error("Expected error writing to closed connection")
+	if err := testhelpers.SendMessage(conn, "test2"); err == nil {
+		t.Error("Expected an error writing to a closed connection")
 	}
 }
 
-// TestReadErrorHandling verifies read operations handle errors properly
-func TestReadErrorHandling(t *testing.T) {
-	// Create test server
-	server.StartHub()
-	s := httptest.NewServer(server.SetupRoutes())
-	defer s.Close()
+// TestReadDeadlineProducesTimeout verifies that a read deadline expiring on an
+// idle connection surfaces as a timeout rather than hanging or reporting
+// success.
+func TestReadDeadlineProducesTimeout(t *testing.T) {
+	wsURL, _ := errorTestServer(t)
+	conn := testhelpers.Dial(t, wsURL, originOf(t, wsURL))
 
-	// Configure allowed origins
-	cfg := server.NewConfig()
-	cfg.AllowedOrigins = []string{s.URL}
-	server.SetConfig(cfg)
-	defer server.SetConfig(nil)
-
-	// Convert http to ws
-	url := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
-
-	// Connect with proper origin header
-	dialer := websocket.DefaultDialer
-	header := http.Header{}
-	header.Set("Origin", s.URL)
-
-	ws, resp, err := dialer.Dial(url, header)
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-	if err != nil {
-		t.Fatalf(errMsgFailedToConnect, err)
-	}
-	defer func() {
-		if err := ws.Close(); err != nil {
-			t.Logf(errMsgFailedToClose, err)
-		}
-	}()
-
-	// Set a read deadline to force timeout
-	if err := ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
 		t.Fatalf("Failed to set read deadline: %v", err)
 	}
 
-	// Try to read with deadline - should timeout gracefully
-	_, _, err = ws.ReadMessage()
+	_, _, err := conn.ReadMessage()
 	if err == nil {
-		t.Log("Expected timeout error, got successful read")
-	} else if errors.Is(err, io.EOF) || websocket.IsCloseError(err, websocket.CloseAbnormalClosure) {
-		// This is expected - timeout or close error
-		t.Logf("Got expected error: %v", err)
+		t.Fatal("Expected a timeout error, got a successful read")
+	}
+
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Errorf("Expected a timeout error, got %v", err)
 	}
 }
 
-// TestErrorLoggingContext verifies errors include client address context
-func TestErrorLoggingContext(t *testing.T) {
-	// This test verifies that error messages include client address
-	// In a real implementation, we would capture log output and verify
-	// it contains the expected client address information
+// TestClientRegistersAndUnregisters verifies that the hub tracks a connection
+// for exactly as long as it is open — the accounting every error path relies on.
+func TestClientRegistersAndUnregisters(t *testing.T) {
+	wsURL, hub := errorTestServer(t)
+	conn := testhelpers.Dial(t, wsURL, originOf(t, wsURL))
 
-	server.StartHub()
-	s := httptest.NewServer(server.SetupRoutes())
-	defer s.Close()
+	testhelpers.WaitFor(t, 2*time.Second, "the client to register", func() bool {
+		return hub.ClientCount() == 1
+	})
 
-	// Configure allowed origins
-	cfg := server.NewConfig()
-	cfg.AllowedOrigins = []string{s.URL}
-	server.SetConfig(cfg)
-	defer server.SetConfig(nil)
-
-	url := "ws" + strings.TrimPrefix(s.URL, "http") + "/ws"
-
-	// Connect with proper origin header
-	dialer := websocket.DefaultDialer
-	header := http.Header{}
-	header.Set("Origin", s.URL)
-
-	ws, resp, err := dialer.Dial(url, header)
-	if resp != nil {
-		_ = resp.Body.Close()
-	}
-	if err != nil {
-		t.Fatalf(errMsgFailedToConnect, err)
-	}
-	defer func() {
-		if err := ws.Close(); err != nil {
-			t.Logf(errMsgFailedToClose, err)
-		}
-	}()
-
-	// Send a message to ensure client is registered
-	err = ws.WriteJSON(map[string]string{"content": "test"})
-	if err != nil {
-		t.Errorf("Failed to write message: %v", err)
+	if err := conn.Close(); err != nil {
+		t.Logf(errMsgFailedToClose, err)
 	}
 
-	// Give time for processing
-	time.Sleep(100 * time.Millisecond)
-
-	// Note: In production, we'd verify logs contain client address
-	t.Log("Client connection successful - errors would include address context")
+	testhelpers.WaitFor(t, 2*time.Second, "the client to unregister", func() bool {
+		return hub.ClientCount() == 0
+	})
 }
 
-// TestMultipleErrorScenarios tests various error combinations
-func TestMultipleErrorScenarios(t *testing.T) {
-	scenarios := []struct {
-		name        string
-		description string
-	}{
-		{
-			name:        "ConnectionDrop",
-			description: "Client connection drops unexpectedly",
-		},
-		{
-			name:        "OversizedMessage",
-			description: "Client sends message exceeding size limit",
-		},
-		{
-			name:        "InvalidJSON",
-			description: "Client sends invalid JSON",
-		},
-		{
-			name:        "RateLimitExceeded",
-			description: "Client exceeds rate limit",
-		},
+// TestMalformedMessageKeepsConnectionOpen verifies that a frame the server
+// cannot parse is discarded without tearing the sender's connection down: the
+// next valid message from the same connection still reaches everyone else.
+func TestMalformedMessageKeepsConnectionOpen(t *testing.T) {
+	wsURL, hub := errorTestServer(t)
+	origin := originOf(t, wsURL)
+	sender, receiver := testhelpers.DialPair(t, wsURL, origin)
+
+	testhelpers.WaitFor(t, 2*time.Second, "both clients to register", func() bool {
+		return hub.ClientCount() == 2
+	})
+
+	if err := sender.WriteMessage(websocket.TextMessage, []byte("not valid json")); err != nil {
+		t.Fatalf("Failed to send malformed message: %v", err)
 	}
 
-	for _, scenario := range scenarios {
-		t.Run(scenario.name, func(t *testing.T) {
-			t.Logf("Scenario: %s - %s", scenario.name, scenario.description)
-			// In full implementation, would test each scenario
-			// For now, documenting expected behavior
-		})
+	if err := testhelpers.SendMessage(sender, "still here"); err != nil {
+		t.Fatalf("Failed to send follow-up message: %v", err)
+	}
+
+	if err := receiver.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("Failed to set read deadline: %v", err)
+	}
+
+	_, raw, err := receiver.ReadMessage()
+	if err != nil {
+		t.Fatalf("Sender did not survive the malformed message: %v", err)
+	}
+
+	if want := `{"content":"still here"}`; string(raw) != want {
+		t.Errorf("Expected %s, got %s", want, raw)
 	}
 }
 
-// TestRecoveryFromPanic verifies system handles panics gracefully
-func TestRecoveryFromPanic(t *testing.T) {
-	// The hub's safeSend includes panic recovery
-	hub := server.NewHub()
-	go hub.Run()
+// originOf returns the http:// origin matching a ws:// endpoint URL.
+func originOf(t *testing.T, wsURL string) string {
+	t.Helper()
 
-	time.Sleep(50 * time.Millisecond)
-
-	// Shutdown cleanly
-	err := hub.Shutdown(1 * time.Second)
+	parsed, err := url.Parse(wsURL)
 	if err != nil {
-		t.Errorf("Shutdown failed: %v", err)
+		t.Fatalf("Failed to parse WebSocket URL: %v", err)
 	}
 
-	// Note: In full implementation, would test actual panic scenarios
-	t.Log("Hub safely handles panics in send operations")
+	return "http://" + parsed.Host
 }

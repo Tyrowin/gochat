@@ -1,9 +1,3 @@
-// Package integration contains integration tests for the Blip server.
-//
-// These tests verify that multiple components work together correctly by testing
-// the complete system behavior with real HTTP servers, WebSocket connections,
-// and end-to-end functionality. Integration tests ensure that the system works
-// as expected when all components are assembled together.
 package integration
 
 import (
@@ -14,8 +8,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,74 +17,11 @@ import (
 	"github.com/maltemindedal/blip/internal/server"
 )
 
-const (
-	errMsgReadDeadline = "Failed to set read deadline: %v"
-	errMsgParseURL     = "Failed to parse test server URL: %v"
-)
-
-func mustMarshalMessage(t *testing.T, content string) []byte {
-	t.Helper()
-
-	payload, err := json.Marshal(server.Message{Content: content})
-	if err != nil {
-		t.Fatalf("Failed to marshal message: %v", err)
-	}
-	return payload
-}
-
-func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) {
-	t.Helper()
-	if conn == nil {
-		t.Fatalf("nil connection provided to expectNoMessage")
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		t.Fatalf(errMsgReadDeadline, err)
-	}
-	_, _, err := conn.ReadMessage()
-	if err == nil {
-		t.Fatalf("Expected no message, but received one")
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return
-	}
-	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-		return
-	}
-	t.Fatalf("Unexpected error while waiting for absence of message: %v", err)
-}
-
-func configureServerForTest(t *testing.T, baseURL string, customize func(cfg *server.Config)) {
-	t.Helper()
-
-	cfg := server.NewConfig()
-	cfg.AllowedOrigins = append([]string{baseURL}, cfg.AllowedOrigins...)
-	if customize != nil {
-		customize(cfg)
-	}
-	server.SetConfig(cfg)
-	t.Cleanup(func() {
-		server.SetConfig(nil)
-	})
-}
-
-func newOriginHeader(origin string) http.Header {
-	header := http.Header{}
-	if origin != "" {
-		header.Set("Origin", origin)
-	}
-	return header
-}
-
 // TestWebSocketEndpointIntegration tests the WebSocket endpoint with full server integration.
 // It verifies that WebSocket connections can be established, messages can be sent and received,
 // and the complete WebSocket functionality works in a real server environment.
 func TestWebSocketEndpointIntegration(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
+	testServer, _ := newTestServer(t)
 	configureServerForTest(t, testServer.URL, nil)
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
@@ -108,19 +37,6 @@ func TestWebSocketEndpointIntegration(t *testing.T) {
 	t.Run("GET Without WebSocket Headers", func(t *testing.T) {
 		testGETWithoutWebSocketHeaders(t, testServer.URL)
 	})
-}
-
-// buildWebSocketURL constructs a WebSocket URL from the test server URL
-func buildWebSocketURL(t *testing.T, serverURL string) string {
-	t.Helper()
-
-	u, err := url.Parse(serverURL)
-	if err != nil {
-		t.Fatalf(errMsgParseURL, err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
-	return u.String()
 }
 
 // testSuccessfulWebSocketConnection tests establishing a WebSocket connection and sending messages
@@ -184,29 +100,11 @@ func testGETWithoutWebSocketHeaders(t *testing.T, serverURL string) {
 // It verifies that messages sent by one client are properly broadcasted to all other
 // connected clients through the hub system.
 func TestWebSocketMessageBroadcasting(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
+	testServer, hub := newTestServer(t)
 	configureServerForTest(t, testServer.URL, nil)
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
-	connections := connectMultipleClients(t, wsURL, testServer.URL, 3)
-
-	// Ensure all connections are closed at the end
-	defer func() {
-		for _, conn := range connections {
-			if conn != nil {
-				if err := conn.Close(); err != nil {
-					t.Logf("Failed to close connection: %v", err)
-				}
-			}
-		}
-	}()
-
-	// Give the hub time to register all clients
-	time.Sleep(50 * time.Millisecond)
+	connections := dialClients(t, hub, wsURL, testServer.URL, 3)
 
 	messageContent := "Hello from client 0!"
 	sendMessageFromClient(t, connections[0], messageContent)
@@ -215,23 +113,6 @@ func TestWebSocketMessageBroadcasting(t *testing.T) {
 
 	testMalformedMessageIgnored(t, connections)
 	closeAllConnections(t, connections)
-}
-
-// connectMultipleClients establishes multiple WebSocket connections
-func connectMultipleClients(t *testing.T, wsURL, serverURL string, numClients int) []*websocket.Conn {
-	t.Helper()
-
-	connections := make([]*websocket.Conn, numClients)
-	for i := range numClients {
-		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
-		if err != nil {
-			t.Fatalf("Failed to connect client %d: %v", i, err)
-		}
-		// Don't defer close here - let the caller handle cleanup
-		_ = resp.Body.Close()
-		connections[i] = conn
-	}
-	return connections
 }
 
 // sendMessageFromClient sends a message from a specific client
@@ -334,60 +215,41 @@ func closeAllConnections(t *testing.T, connections []*websocket.Conn) {
 // It verifies that connections can be established, used for communication, and properly
 // closed, including testing multiple sequential connections.
 func TestWebSocketConnectionLifecycle(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
+	testServer, hub := newTestServer(t)
 	configureServerForTest(t, testServer.URL, nil)
-	u, err := url.Parse(testServer.URL)
-	if err != nil {
-		t.Fatalf(errMsgParseURL, err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
+	wsURL := buildWebSocketURL(t, testServer.URL)
 
 	t.Run("Connection and Disconnection", func(t *testing.T) {
-		// Connect
-		conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-		if err != nil {
-			t.Fatalf("Failed to connect: %v", err)
-		}
-		defer func() { _ = resp.Body.Close() }()
+		conn := dial(t, hub, wsURL, testServer.URL)
 
 		// Test that connection is active
-		err = conn.WriteMessage(websocket.PingMessage, nil)
-		if err != nil {
+		if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 			t.Errorf("Failed to send ping: %v", err)
 		}
 
-		// Close connection
-		err = conn.Close()
-		if err != nil {
+		if err := conn.Close(); err != nil {
 			t.Errorf("Failed to close connection: %v", err)
 		}
+
+		waitForUnregister(t, hub, 0)
 	})
 
 	t.Run("Multiple Sequential Connections", func(t *testing.T) {
-		// Connect and disconnect multiple times
+		// Each connection must be fully registered and then fully unregistered
+		// before the next one, which is what makes the count assertions exact.
 		for i := range 3 {
-			conn, resp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-			if err != nil {
-				t.Fatalf("Failed to connect on iteration %d: %v", i, err)
-			}
+			conn := dial(t, hub, wsURL, testServer.URL)
 
-			// Send a test message
 			testMsg := "Test message " + strconv.Itoa(i)
 			if err := conn.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, testMsg)); err != nil {
 				t.Errorf("Failed to send message on iteration %d: %v", i, err)
 			}
 
-			// Close connection
-			_ = conn.Close()
-			_ = resp.Body.Close()
+			if err := conn.Close(); err != nil {
+				t.Errorf("Failed to close connection on iteration %d: %v", i, err)
+			}
 
-			// Brief pause between connections
-			time.Sleep(10 * time.Millisecond)
+			waitForUnregister(t, hub, 0)
 		}
 	})
 }
@@ -396,11 +258,7 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 // It verifies that multiple clients can connect simultaneously and exchange messages
 // without causing race conditions or system instability.
 func TestWebSocketConcurrentConnections(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
+	testServer, _ := newTestServer(t)
 	configureServerForTest(t, testServer.URL, nil)
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
@@ -490,11 +348,7 @@ func waitForConcurrentClients(t *testing.T, numClients int, done chan error) {
 }
 
 func TestWebSocketOriginValidation(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
+	testServer, _ := newTestServer(t)
 
 	allowedOrigin := "http://allowed.test"
 	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
@@ -557,37 +411,14 @@ func testDisallowedOrigin(t *testing.T, wsURL string) {
 }
 
 func TestWebSocketMessageSizeLimit(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
+	testServer, hub := newTestServer(t)
 
 	const limit int64 = 64
 	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
 		cfg.MaxMessageSize = limit
 	})
 
-	u, err := url.Parse(testServer.URL)
-	if err != nil {
-		t.Fatalf(errMsgParseURL, err)
-	}
-	u.Scheme = "ws"
-	u.Path = "/ws"
-
-	sender, senderResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-	if err != nil {
-		t.Fatalf("Failed to connect sender: %v", err)
-	}
-	defer func() { _ = sender.Close() }()
-	defer func() { _ = senderResp.Body.Close() }()
-
-	receiver, receiverResp, err := websocket.DefaultDialer.Dial(u.String(), newOriginHeader(testServer.URL))
-	if err != nil {
-		t.Fatalf("Failed to connect receiver: %v", err)
-	}
-	defer func() { _ = receiver.Close() }()
-	defer func() { _ = receiverResp.Body.Close() }()
+	sender, receiver := dialPair(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 
 	oversizedContent := strings.Repeat("A", int(limit)+10)
 	oversizedPayload := mustMarshalMessage(t, oversizedContent)
@@ -610,11 +441,7 @@ func TestWebSocketMessageSizeLimit(t *testing.T) {
 }
 
 func TestWebSocketRateLimiting(t *testing.T) {
-	server.StartHub()
-
-	mux := server.SetupRoutes()
-	testServer := httptest.NewServer(mux)
-	defer testServer.Close()
+	testServer, hub := newTestServer(t)
 
 	rateCfg := server.RateLimitConfig{Burst: 2, RefillInterval: 500 * time.Millisecond}
 	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
@@ -622,30 +449,15 @@ func TestWebSocketRateLimiting(t *testing.T) {
 	})
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
-	sender, senderResp := connectRateLimitClient(t, wsURL, testServer.URL, "sender")
-	defer func() { _ = sender.Close() }()
-	defer func() { _ = senderResp.Body.Close() }()
-
-	receiver, receiverResp := connectRateLimitClient(t, wsURL, testServer.URL, "receiver")
-	defer func() { _ = receiver.Close() }()
-	defer func() { _ = receiverResp.Body.Close() }()
+	sender, receiver := dialPair(t, hub, wsURL, testServer.URL)
 
 	sendAndReceiveBurstMessages(t, sender, receiver, rateCfg.Burst)
 	testOverLimitMessageRejected(t, sender, receiver)
 
-	receiver, receiverResp = reconnectReceiver(t, wsURL, testServer.URL, receiver, receiverResp)
+	// A fresh receiver starts with an empty read buffer, so the message after
+	// the refill is unambiguously the one this test is waiting for.
+	receiver = reconnectReceiver(t, hub, wsURL, testServer.URL, receiver)
 	testMessageAfterRefill(t, sender, receiver, rateCfg.RefillInterval)
-}
-
-// connectRateLimitClient establishes a WebSocket connection for rate limit testing
-func connectRateLimitClient(t *testing.T, wsURL, serverURL, clientName string) (*websocket.Conn, *http.Response) {
-	t.Helper()
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
-	if err != nil {
-		t.Fatalf("Failed to connect %s: %v", clientName, err)
-	}
-	return conn, resp
 }
 
 // sendAndReceiveBurstMessages sends and receives messages up to the burst limit
@@ -695,24 +507,23 @@ func testOverLimitMessageRejected(t *testing.T, sender, receiver *websocket.Conn
 	expectNoMessage(t, receiver, 200*time.Millisecond)
 }
 
-// reconnectReceiver closes and reconnects the receiver client
-func reconnectReceiver(t *testing.T, wsURL, serverURL string, oldReceiver *websocket.Conn, oldResp *http.Response) (*websocket.Conn, *http.Response) {
+// reconnectReceiver closes the receiver, waits for the hub to drop it, and dials
+// a replacement that the hub has registered before this returns.
+func reconnectReceiver(t *testing.T, hub *server.Hub, wsURL, serverURL string, oldReceiver *websocket.Conn) *websocket.Conn {
 	t.Helper()
 
 	_ = oldReceiver.Close()
-	_ = oldResp.Body.Close()
+	waitForUnregister(t, hub, 1)
 
-	receiver, receiverResp, err := websocket.DefaultDialer.Dial(wsURL, newOriginHeader(serverURL))
-	if err != nil {
-		t.Fatalf("Failed to reconnect receiver: %v", err)
-	}
-	return receiver, receiverResp
+	return dial(t, hub, wsURL, serverURL)
 }
 
 // testMessageAfterRefill verifies that messages can be sent after the rate limit refills
 func testMessageAfterRefill(t *testing.T, sender, receiver *websocket.Conn, refillInterval time.Duration) {
 	t.Helper()
 
+	// Not a synchronization sleep: the token bucket refills on wall-clock time,
+	// so the only way to observe a refill is to let that time pass.
 	time.Sleep(refillInterval + 100*time.Millisecond)
 
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "after-refill")); err != nil {

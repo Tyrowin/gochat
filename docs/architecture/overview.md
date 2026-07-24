@@ -41,7 +41,8 @@ internal/server/
   client.go                 Per-connection read and write pumps
   origin.go                 Origin normalization and allow-list checks
   rate_limiter.go           Per-connection token bucket
-  types.go                  Message payloads and connection-error helpers
+  types.go                  Message payloads exchanged over the wire
+  close_errors.go           Tells ordinary connection teardown from a real fault
   message_json.go           The wire-format encoder, kept identical to encoding/json
 test/                       Unit and integration suites (see guides/testing.md)
 ```
@@ -53,13 +54,18 @@ package comment on each file describes that file's slice of responsibility.
 ## Components
 
 **Hub** (`hub.go`) — owns the set of connected clients. A single goroutine runs `Hub.Run`, selecting
-over four channels: `register`, `unregister`, `broadcast`, and `shutdown`.
+over five channels: `register`, `unregister`, `broadcast`, `countReq`, and `shutdown`.
 
 That goroutine is the *sole* owner of the client map: registration, unregistration, fan-out, and
 shutdown all happen inside `Run`, so the map needs no lock at all. Broadcasts iterate the map
 directly instead of copying it, and the slice of failed clients is scratch space reused across
 messages, which makes the fan-out path allocation-free. The rule that keeps this sound is simple:
 every mutation of the client set must arrive through one of the hub's channels.
+
+Reads obey the same rule. `ClientCount()` sends a reply channel down `countReq` and lets `Run`
+answer it, rather than reading the map from the caller's goroutine. Because `Run` is sequential, a
+reply also proves everything queued before the request has already been processed — which is what
+makes it a usable synchronization barrier in tests.
 
 **Client** (`client.go`) — one per connection, with two goroutines:
 
@@ -137,11 +143,14 @@ its messages being queued indefinitely.
 construct `http.Server` with 15s read/write and 60s idle timeouts → `ListenAndServe` in a goroutine →
 block on either a server error or `SIGINT`/`SIGTERM`.
 
-**Shutdown**, on signal, in strict order with a 30-second overall cap:
+**Shutdown**, on signal, in strict order with a 30-second overall cap. `main` builds one
+`context.Context` carrying that cap and derives a 15-second child for each stage, so a stage that
+overruns cannot borrow the other's budget:
 
-1. `http.Server.Shutdown` (15s budget) — stops accepting connections and drains in-flight requests.
-2. `Hub.Shutdown` (15s budget) — closes the `shutdown` channel, which stops the run loop, closes
-   every client connection, and waits on the `WaitGroup` for all pumps to exit.
+1. `ShutdownServer` (15s context) — stops accepting connections and drains in-flight requests.
+2. `Hub.Shutdown` (15s context) — closes the `shutdown` channel, which stops the run loop, closes
+   every client connection, and waits on the `WaitGroup` for all pumps to exit. Both of those waits
+   share the one 15-second deadline.
 
 The `shutdown` channel appears in every blocking select in the codebase — registration, broadcast,
 and the write pump — so nothing can block shutdown by waiting on a channel nobody will read.
@@ -187,7 +196,7 @@ frame.
 
 ## Design trade-offs
 
-**Global hub and global config.** `GetHub()` and the package-level config snapshot are process-wide
+**Global hub and global config.** `GlobalHub()` and the package-level config snapshot are process-wide
 singletons. This keeps `main.go` to a hundred lines, at the cost of testability — the test suite
 works around it with `SetupRoutesWithHub` and `SetConfig`. Threading a `*Hub` and `*Config` through
 explicitly would be the natural refactor if the server ever grows a second hub (rooms, namespaces).

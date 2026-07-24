@@ -97,23 +97,28 @@ func run() error {
 
 // gracefulShutdown stops accepting new connections and then drains the hub,
 // giving up once the overall shutdown budget is exhausted.
+//
+// The HTTP server must stop accepting connections before the hub drains, so the
+// two stages run in sequence and their failures are reported together. Each
+// stage gets its own half of the budget from a context derived from the overall
+// one, which caps the total even if a stage overruns.
 func gracefulShutdown(httpServer *http.Server) error {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	complete := make(chan error, 1)
-	go func() {
-		// The HTTP server must stop accepting connections before the hub drains,
-		// so these run in sequence and their failures are reported together.
-		httpErr := server.ShutdownServer(httpServer, stageTimeout)
-		hubErr := server.GetHub().Shutdown(stageTimeout)
-		complete <- errors.Join(httpErr, hubErr)
-	}()
+	httpErr := withStageDeadline(ctx, func(stageCtx context.Context) error {
+		return server.ShutdownServer(stageCtx, httpServer)
+	})
 
-	select {
-	case err := <-complete:
-		return err
-	case <-ctx.Done():
-		return fmt.Errorf("shutdown timeout exceeded: %w", ctx.Err())
-	}
+	hubErr := withStageDeadline(ctx, server.GlobalHub().Shutdown)
+
+	return errors.Join(httpErr, hubErr)
+}
+
+// withStageDeadline runs stage under its own slice of the shutdown budget.
+func withStageDeadline(parent context.Context, stage func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(parent, stageTimeout)
+	defer cancel()
+
+	return stage(ctx)
 }

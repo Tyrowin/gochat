@@ -46,7 +46,10 @@ BUILD_TIME ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 endif
 
 # Build flags
-LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)"
+STAMP=-X main.Version=$(VERSION) -X main.Commit=$(COMMIT) -X main.BuildTime=$(BUILD_TIME)
+LDFLAGS=-ldflags "$(STAMP)"
+# Release builds additionally strip the symbol table and DWARF data.
+RELEASE_LDFLAGS=-ldflags "$(STAMP) -s -w"
 
 ## help: Show this help message
 help:
@@ -351,14 +354,12 @@ build-current:
 
 # Create release build
 ## release: Create optimized release build for all platforms
-release: clean fmt vet lint test
-	@echo Creating release builds...
-	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(LINUX_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
-	@CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(LINUX_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
-	@CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(DARWIN_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
-	@CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(DARWIN_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
-	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(WINDOWS_DIR)/$(BINARY_NAME)-amd64.exe $(MAIN_PATH)
-	@CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(LDFLAGS) -a -installsuffix cgo -trimpath -o $(WINDOWS_DIR)/$(BINARY_NAME)-arm64.exe $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(RELEASE_LDFLAGS) -a -installsuffix cgo -trimpath -o $(LINUX_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(RELEASE_LDFLAGS) -a -installsuffix cgo -trimpath -o $(LINUX_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build $(RELEASE_LDFLAGS) -a -installsuffix cgo -trimpath -o $(DARWIN_DIR)/$(BINARY_NAME)-amd64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build $(RELEASE_LDFLAGS) -a -installsuffix cgo -trimpath -o $(DARWIN_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build $(RELEASE_LDFLAGS) -a -installsuffix cgo -trimpath -o $(WINDOWS_DIR)/$(BINARY_NAME)-amd64.exe $(MAIN_PATH)
+	@CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build $(RELEASE_LDFLAGS) -a -installsuffix cgo -trimpath -o $(WINDOWS_DIR)/$(BINARY_NAME)-arm64.exe $(MAIN_PATH)
 	@echo Release builds created in $(BUILD_DIR)/
 	@echo Creating checksums...
 	@cd $(LINUX_DIR) && (sha256sum * > checksums.txt 2>/dev/null || shasum -a 256 * > checksums.txt)

@@ -73,23 +73,33 @@ The message appears in the second tab. It does **not** appear as an incoming mes
 the server broadcasts to everyone *except* the sender, so your own text only shows as the local
 "You:" echo the page adds.
 
-The server logs each step:
+The server logs each connection as structured `log/slog` records:
 
 ```
-Client registered from 127.0.0.1:54321. Total clients: 1
-Received message from 127.0.0.1:54321: {"content":"hello"}
-Broadcasting message to 1 clients
+time=2026-07-24T15:14:05.101+02:00 level=INFO msg="client registered" addr=127.0.0.1:54321 total_clients=1
+time=2026-07-24T15:14:07.842+02:00 level=INFO msg="client registered" addr=127.0.0.1:54322 total_clients=2
+```
+
+Individual messages and broadcasts are logged at `debug`, not `info`, so they stay out of the way
+until you ask for them. Restart with `LOG_LEVEL=debug` to see them:
+
+```
+time=2026-07-24T15:14:09.233+02:00 level=DEBUG msg="received message" addr=127.0.0.1:54321 payload="{\"content\":\"hello\"}"
+time=2026-07-24T15:14:09.233+02:00 level=DEBUG msg="broadcast complete" delivered=1 dropped=0
 ```
 
 ## 5. Stop it
 
-Press `Ctrl+C`. The server drains in two steps and logs:
+Press `Ctrl+C`. The server stops accepting connections, then drains the hub:
 
 ```
-Received shutdown signal: interrupt
-Step 1: Stopping HTTP server...
-Step 2: Shutting down WebSocket hub...
-Server stopped gracefully
+time=2026-07-24T15:14:31.007+02:00 level=INFO msg="shutdown signal received; draining connections"
+time=2026-07-24T15:14:31.007+02:00 level=INFO msg="shutting down HTTP server"
+time=2026-07-24T15:14:31.014+02:00 level=INFO msg="HTTP server shutdown completed"
+time=2026-07-24T15:14:31.014+02:00 level=INFO msg="initiating hub shutdown"
+time=2026-07-24T15:14:31.015+02:00 level=INFO msg="closed client connections" count=2
+time=2026-07-24T15:14:31.016+02:00 level=INFO msg="hub shutdown completed"
+time=2026-07-24T15:14:31.016+02:00 level=INFO msg="server stopped gracefully"
 ```
 
 ## What you just ran

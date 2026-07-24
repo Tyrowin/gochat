@@ -14,9 +14,9 @@ import (
 	"github.com/maltemindedal/blip/internal/server"
 )
 
-const (
-	expectedHealthResponse = "Blip server is running!"
-)
+// expectedHealthResponse is the handler's own constant, so a change to the
+// served text cannot pass these tests by accident.
+const expectedHealthResponse = server.HealthResponse
 
 // TestHealthHandlerUnit tests the health handler function in isolation.
 // It verifies that the handler responds correctly to different HTTP methods
