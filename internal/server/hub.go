@@ -10,6 +10,31 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// clientConn is everything the hub needs from a connected client, and nothing
+// else. [Client] satisfies it over a real socket; a test registers a fake,
+// which is the only way to drive the paths a real connection cannot be made to
+// take on demand — a send buffer that fills faster than it drains, above all.
+type clientConn interface {
+	// inbox is the buffered channel the hub fans messages into. The hub reads
+	// it once, at registration, and keeps it alongside the client, so the
+	// fan-out sends on a channel directly instead of through this interface.
+	// The hub also closes it on unregistration, which is what tells the write
+	// pump to send a close frame and stop.
+	inbox() chan<- []byte
+
+	// serve runs the client until its connection is finished. The hub calls it
+	// on a goroutine tracked by the WaitGroup [Hub.Shutdown] drains, so the
+	// client's own goroutines are part of the shutdown wait.
+	serve()
+
+	// closeConnection closes the underlying connection, unblocking whatever is
+	// parked on it. The hub calls it on every client when it shuts down.
+	closeConnection()
+
+	// remoteAddr identifies the client in the hub's log records.
+	remoteAddr() string
+}
+
 // Hub manages all WebSocket client connections and handles message broadcasting.
 //
 // The clients map is owned exclusively by the hub's run loop: registration,
@@ -27,14 +52,17 @@ type Hub struct {
 	// upgrader is this hub's own, because its CheckOrigin closes over cfg.
 	upgrader websocket.Upgrader
 
-	clients    map[*Client]struct{}
+	// clients maps every registered client to the inbox it was registered with.
+	// Keeping the channel here rather than asking the client for it per message
+	// is what keeps the fan-out free of interface dispatch.
+	clients    map[clientConn]chan<- []byte
 	broadcast  chan BroadcastMessage
-	register   chan *Client
-	unregister chan *Client
+	register   chan clientConn
+	unregister chan clientConn
 
 	// failed is scratch space reused across broadcasts to avoid allocating a
 	// slice per message. Only the run loop touches it.
-	failed []*Client
+	failed []clientConn
 
 	// countReq carries a reply channel into the run loop so callers can
 	// read the client count without touching the map themselves.
@@ -58,10 +86,10 @@ type Hub struct {
 func NewHub(cfg *Config) *Hub {
 	h := &Hub{
 		cfg:        resolveConfig(cfg),
-		clients:    make(map[*Client]struct{}),
+		clients:    make(map[clientConn]chan<- []byte),
 		broadcast:  make(chan BroadcastMessage),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
+		register:   make(chan clientConn),
+		unregister: make(chan clientConn),
 		countReq:   make(chan chan int),
 		shutdown:   make(chan struct{}),
 		done:       make(chan struct{}),
@@ -72,19 +100,19 @@ func NewHub(cfg *Config) *Hub {
 }
 
 // Register hands client to the hub's run loop, which adds it to the client set
-// and starts its pumps, and reports whether it was accepted.
+// and starts serving it, and reports whether it was accepted.
 //
 // It returns false without registering anything if the hub is shutting down —
 // which closes every connection itself, so a late arrival must not join — or if
 // ctx is done, meaning the request that brought the client in has gone away. In
 // both cases the caller still owns closing the connection.
-func (h *Hub) Register(ctx context.Context, client *Client) bool {
+func (h *Hub) Register(ctx context.Context, client clientConn) bool {
 	select {
 	case h.register <- client:
 		return true
 
 	case <-h.shutdown:
-		log().Info("rejected websocket client; hub is shutting down", "remote_addr", client.addr)
+		log().Info("rejected websocket client; hub is shutting down", "remote_addr", client.remoteAddr())
 		return false
 
 	case <-ctx.Done():
@@ -92,11 +120,11 @@ func (h *Hub) Register(ctx context.Context, client *Client) bool {
 	}
 }
 
-// Unregister removes client from the hub's client set, closing its send channel.
+// Unregister removes client from the hub's client set, closing its inbox.
 // It is a no-op once the hub is shutting down, which tears every client down
 // itself, so a read pump exiting because of that shutdown does not block on a
 // run loop that has stopped reading.
-func (h *Hub) Unregister(client *Client) {
+func (h *Hub) Unregister(client clientConn) {
 	select {
 	case h.unregister <- client:
 	case <-h.shutdown:
@@ -199,32 +227,32 @@ func (h *Hub) run() {
 	}
 }
 
-// addClient registers a client and starts its read and write pumps.
-func (h *Hub) addClient(client *Client) {
-	h.clients[client] = struct{}{}
-	log().Info("client registered", "addr", client.addr, "total_clients", len(h.clients))
+// addClient registers a client and starts serving it.
+//
+// The WaitGroup is incremented here, inside the run loop, so a client that got
+// in before shutdown was signalled is always one [Hub.Shutdown] waits for.
+func (h *Hub) addClient(client clientConn) {
+	h.clients[client] = client.inbox()
+	log().Info("client registered", "addr", client.remoteAddr(), "total_clients", len(h.clients))
 
-	h.wg.Add(2)
+	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		client.writePump()
-	}()
-	go func() {
-		defer h.wg.Done()
-		client.readPump()
+		client.serve()
 	}()
 }
 
-// removeClient unregisters a client and closes its send channel. It is a no-op
-// for clients that are already gone, which makes double unregistration safe.
-func (h *Hub) removeClient(client *Client) {
-	if _, ok := h.clients[client]; !ok {
+// removeClient unregisters a client and closes its inbox. It is a no-op for
+// clients that are already gone, which makes double unregistration safe.
+func (h *Hub) removeClient(client clientConn) {
+	inbox, ok := h.clients[client]
+	if !ok {
 		return
 	}
 
 	delete(h.clients, client)
-	close(client.send)
-	log().Info("client unregistered", "addr", client.addr, "total_clients", len(h.clients))
+	close(inbox)
+	log().Info("client unregistered", "addr", client.remoteAddr(), "total_clients", len(h.clients))
 }
 
 // handleBroadcast fans a message out to every client except the sender.
@@ -235,13 +263,13 @@ func (h *Hub) handleBroadcast(broadcastMsg BroadcastMessage) {
 	h.failed = h.failed[:0]
 	delivered := 0
 
-	for client := range h.clients {
+	for client, inbox := range h.clients {
 		if client == broadcastMsg.Sender {
 			continue
 		}
 
 		select {
-		case client.send <- broadcastMsg.Payload:
+		case inbox <- broadcastMsg.Payload:
 			delivered++
 		default:
 			h.failed = append(h.failed, client)
@@ -250,7 +278,7 @@ func (h *Hub) handleBroadcast(broadcastMsg BroadcastMessage) {
 
 	dropped := len(h.failed)
 	for _, client := range h.failed {
-		log().Warn("dropping client with a full send buffer", "addr", client.addr)
+		log().Warn("dropping client with a full send buffer", "addr", client.remoteAddr())
 		h.removeClient(client)
 	}
 	clear(h.failed)

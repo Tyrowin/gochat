@@ -53,6 +53,30 @@ func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 	}
 }
 
+// inbox is the channel the hub delivers into, and closes when it drops this
+// client. It satisfies [clientConn].
+func (c *Client) inbox() chan<- []byte { return c.send }
+
+// remoteAddr is the address the hub names this client by in its log records.
+// It satisfies [clientConn].
+func (c *Client) remoteAddr() string { return c.addr }
+
+// serve runs the connection's two pumps and returns once both have exited. It
+// satisfies [clientConn], so the hub launches one goroutine per client and
+// stays out of how many the connection actually needs — gorilla/websocket
+// permits one concurrent reader and one concurrent writer, which is why there
+// are two.
+func (c *Client) serve() {
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		c.writePump()
+	}()
+
+	c.readPump()
+	<-writeDone
+}
+
 // setupReadConnection configures read deadlines and the pong handler for the
 // WebSocket connection.
 func (c *Client) setupReadConnection() {

@@ -71,6 +71,16 @@ directly instead of copying it, and the slice of failed clients is scratch space
 messages, which makes the fan-out path allocation-free. The rule that keeps this sound is simple:
 every mutation of the client set must arrive through one of the hub's channels.
 
+What that map holds is not a `*Client` but `clientConn`, the hub's own four-method view of one: an
+inbox to deliver into, a `serve` to run, a connection to close at shutdown, and an address to log.
+The client satisfies it over a real socket; a test registers a fake with no socket at all, which is
+the only practical way to reach the drop-on-full rule below — see [Testing](../guides/testing.md).
+The map's *value* is that inbox, read once when the client registers, so the fan-out sends on a
+channel it already has rather than calling back through the interface for every client on every
+message. Naming the seam therefore costs the broadcast path nothing: it measures slightly faster at
+1000 clients than dereferencing the channel out of each client did, because the channel now sits in
+the map next to the key instead of one pointer hop away in the client's own memory.
+
 Those channels are the hub's own, though — nothing outside it sends on them. What it exports is
 intent: `Register(ctx, client)`, `Unregister(client)`, and `Publish(msg)`. Each one owns the race a
 raw channel send would leave to its caller, because the run loop stops reading the moment shutdown
@@ -93,7 +103,10 @@ which is what makes it a usable synchronization barrier in tests.
   newlines, so a burst costs one frame rather than one per message.
 
 Splitting reads and writes is required by `gorilla/websocket`: at most one concurrent reader and one
-concurrent writer are allowed per connection.
+concurrent writer are allowed per connection. How many pumps that takes is the client's business, not
+the hub's: the hub starts one goroutine per registered client, running `serve`, which runs the read
+pump on that goroutine, the write pump on a second, and returns only once both have exited. The hub's
+`WaitGroup` therefore has one entry per connection rather than two, and still covers both pumps.
 
 **Rate limiter** (`rate_limiter.go`) — a token bucket per connection, embedded in the `Client` by
 value. Tokens refill continuously from elapsed time rather than on a timer, so there is no background
@@ -185,15 +198,17 @@ by waiting on a channel nobody will read.
 
 ## Concurrency model
 
-| Goroutine        | Count            | Lifetime                       |
-| ---------------- | ---------------- | ------------------------------ |
-| Hub run loop     | 1                | Process lifetime               |
-| Client read pump | 1 per connection | Until read error or shutdown   |
-| Client write pump| 1 per connection | Until send closed or shutdown  |
-| `ListenAndServe` | 1                | Process lifetime               |
+| Goroutine        | Count            | Lifetime                       | Started by                |
+| ---------------- | ---------------- | ------------------------------ | ------------------------- |
+| Hub run loop     | 1                | Process lifetime               | `Hub.Start`               |
+| Client read pump | 1 per connection | Until read error or shutdown   | Hub run loop, via `serve` |
+| Client write pump| 1 per connection | Until send closed or shutdown  | `Client.serve`            |
+| `ListenAndServe` | 1                | Process lifetime               | `Service.Run`             |
 
-Roughly two goroutines and a 256-message buffer per connection. The whole suite runs under `-race`
-in CI because this is where the risk lives.
+Roughly two goroutines and a 256-message buffer per connection. Only the first of the two is the
+hub's to launch and to wait on; the second belongs to the client, which is why `serve` does not
+return until it has stopped. The whole suite runs under `-race` in CI because this is where the risk
+lives.
 
 ## Performance
 

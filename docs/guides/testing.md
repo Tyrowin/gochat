@@ -31,10 +31,19 @@ run the real `server.Service` on a real port, driven the way `main` drives it.
 
 The exception is `internal/server/*_internal_test.go`, which covers what the exported API cannot
 reach: the hot paths the benchmarks measure, the `*http.Server` that `New` builds — its address,
-its timeouts, and its header limit are the service's own, not a caller's — and the shutdown race in
-`Hub.Register` and `Hub.Unregister`, which take a `*Client` that cannot be built without a socket
-from outside the package. `Hub.Publish` loses the same race and is tested from `test/unit`, where it
-belongs, because it needs no client at all.
+its timeouts, and its header limit are the service's own, not a caller's — and anything that needs a
+client. `Hub.Register` and `Hub.Unregister` take `clientConn`, the hub's own view of a client, which
+only this package can name. `Hub.Publish` loses the same shutdown race and is tested from
+`test/unit`, where it belongs, because it needs no client at all.
+
+That view is also what makes the hub's delivery rules testable at all. `hub_internal_test.go` defines
+a `fakeClient` — an inbox and an address, no socket underneath — and registers it through the real
+`Hub.Register`, so the fan-out, sender exclusion, the backpressure drop, and no-op unregistration are
+pinned against the running event loop rather than a copy of it. The backpressure test gives its
+victim a one-slot inbox and publishes twice; over a real connection, filling 256 slots faster than a
+consumer drains them is not something a test can arrange. Assertions read an inbox with a
+non-blocking drain that also reports whether the hub closed it, so a regression fails the test
+instead of hanging on a channel nobody will feed.
 
 ## Running
 
@@ -133,6 +142,12 @@ Follow the conventions already in the suite:
 `make bench` runs `go test -bench=. -benchmem ./...`. The benchmarks live alongside the code they
 measure, in `internal/server/*_internal_test.go`, because they exercise unexported hot paths:
 broadcast fan-out, message normalization, the rate limiter, and origin checks.
+
+`BenchmarkHubBroadcast` builds its client set with `newBenchHub`, which installs fakes through the
+hub's own registration path rather than writing the client map behind its back, so the fan-out it
+times runs over a map the hub assembled itself. It deliberately leaves the event loop unstarted and
+calls the fan-out directly: that keeps the client map owned by the one goroutine touching it and
+keeps channel handoff and pump scheduling out of the number.
 
 They assert allocation counts implicitly rather than wall-clock time — the numbers move with the
 machine, but a path that was allocation-free and stops being so is a regression worth catching. Run
