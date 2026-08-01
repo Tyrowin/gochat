@@ -36,6 +36,13 @@ client. `Hub.Register` and `Hub.Unregister` take `clientConn`, the hub's own vie
 only this package can name. `Hub.Publish` loses the same shutdown race and is tested from
 `test/unit`, where it belongs, because it needs no client at all.
 
+A fourth kind lives there too: checks on the package's own shape rather than on behaviour anyone
+outside can call. `TestResolveConfigPreservesEveryField` compares a resolved `Config` field for field
+so a field added to the struct cannot be dropped in resolution unnoticed, and
+`rate_limiter_internal_test.go` holds `TestClockSeamIsTestOnly`, which parses the package's non-test
+sources to keep production off the rate limiter's clock seam. Neither is reachable from outside the
+package by construction — one names an unexported type, the other reads the package's own files.
+
 That view is also what makes the hub's delivery rules testable at all. `hub_internal_test.go` defines
 a `fakeClient` — an inbox and an address, no socket underneath — and registers it through the real
 `Hub.Register`, so the fan-out, sender exclusion, the backpressure drop, and no-op unregistration are

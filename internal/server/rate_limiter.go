@@ -27,8 +27,8 @@ func newRateLimiter(capacity int, interval time.Duration) rateLimiter {
 // newRateLimiterAt is [newRateLimiter] with the starting instant supplied. It is
 // the constructor half of the test seam and pairs with [rateLimiter.allowAt] —
 // a limiter started at one clock must be spent on that same clock, so the two
-// are used together or not at all. TestClockSeamIsTestOnly holds production to
-// the wrappers; see [rateLimiter.allowAt].
+// are used together or not at all. The same test-only constraint governs both;
+// it is stated once, on [rateLimiter.allowAt].
 func newRateLimiterAt(capacity int, interval time.Duration, now time.Time) rateLimiter {
 	perNano := float64(capacity) / float64(interval)
 	if perNano <= 0 {

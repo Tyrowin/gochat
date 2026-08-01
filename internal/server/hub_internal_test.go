@@ -327,20 +327,31 @@ func TestHubRejectsClientWorkAfterShutdown(t *testing.T) {
 // by arithmetic instead of by sleeping.
 var rateLimiterEpoch = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// drainRateLimiter spends a full bucket at now and asserts the next message is
-// refused, leaving the limiter empty with its baseline at now.
-func drainRateLimiter(t *testing.T, rl *rateLimiter, capacity int, now time.Time) {
+// drainRateLimiter spends a full bucket and asserts the next message is refused,
+// leaving the limiter empty.
+//
+// How the limiter is reached is the caller's to supply, because the tests below
+// reach it two ways: the refill tests spend through the seam at a fixed instant,
+// via [attemptAt], while the one test that drives the production path passes
+// allow itself.
+func drainRateLimiter(t *testing.T, capacity int, attempt func() bool) {
 	t.Helper()
 
 	for i := range capacity {
-		if !rl.allowAt(now) {
+		if !attempt() {
 			t.Fatalf("burst token %d was denied", i)
 		}
 	}
 
-	if rl.allowAt(now) {
+	if attempt() {
 		t.Fatal("limiter allowed a message past its burst")
 	}
+}
+
+// attemptAt is the attempt [drainRateLimiter] needs to spend rl through the seam
+// at a fixed instant, leaving its baseline at now.
+func attemptAt(rl *rateLimiter, now time.Time) func() bool {
+	return func() bool { return rl.allowAt(now) }
 }
 
 // allowedAt reports how many messages the limiter permits at a single instant,
@@ -389,15 +400,7 @@ func TestRateLimiterThrottlesAtCapacity(t *testing.T) {
 	const capacity = 3
 	rl := newRateLimiter(capacity, time.Hour)
 
-	for i := range capacity {
-		if !rl.allow() {
-			t.Fatalf("burst token %d was denied", i)
-		}
-	}
-
-	if rl.allow() {
-		t.Fatal("limiter allowed a message past its burst")
-	}
+	drainRateLimiter(t, capacity, rl.allow)
 }
 
 // TestRateLimiterRefillsFromElapsedTime pins partial refill. Four tokens per
@@ -409,7 +412,7 @@ func TestRateLimiterRefillsFromElapsedTime(t *testing.T) {
 
 	const capacity = 4
 	rl := newRateLimiterAt(capacity, time.Second, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	if n := allowedAt(&rl, rateLimiterEpoch.Add(600*time.Millisecond), capacity); n != 2 {
 		t.Fatalf("600ms of refill allowed %d messages, want 2", n)
@@ -431,7 +434,7 @@ func TestRateLimiterRestoresBurstAfterOneInterval(t *testing.T) {
 	)
 
 	rl := newRateLimiterAt(capacity, interval, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	if n := allowedAt(&rl, rateLimiterEpoch.Add(interval), capacity+1); n != capacity {
 		t.Fatalf("one interval restored %d messages, want %d", n, capacity)
@@ -449,7 +452,7 @@ func TestRateLimiterCapsRefillAtCapacity(t *testing.T) {
 	)
 
 	rl := newRateLimiterAt(capacity, interval, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	if n := allowedAt(&rl, rateLimiterEpoch.Add(100*interval), capacity*10); n != capacity {
 		t.Fatalf("100 idle intervals allowed %d messages, want %d", n, capacity)
@@ -464,7 +467,7 @@ func TestRateLimiterGrantsNothingWithoutElapsedTime(t *testing.T) {
 
 	const capacity = 2
 	rl := newRateLimiterAt(capacity, time.Second, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	for i := range 10 {
 		if rl.allowAt(rateLimiterEpoch) {
