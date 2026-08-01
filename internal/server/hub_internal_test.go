@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -71,6 +72,51 @@ func BenchmarkHubBroadcast(b *testing.B) {
 				b.Fatalf("hub dropped clients during the benchmark: %d of %d remain", len(h.clients), n)
 			}
 		})
+	}
+}
+
+// TestHubRejectsClientWorkAfterShutdown pins the shutdown race that Register and
+// Unregister now own: once the run loop has exited, neither may block on a
+// channel it will never read again. Both take a *Client, which cannot be built
+// without a socket from outside the package, so the test lives here.
+func TestHubRejectsClientWorkAfterShutdown(t *testing.T) {
+	t.Parallel()
+
+	h := NewHub(nil)
+	h.Start()
+	h.ClientCount()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := h.Shutdown(ctx); err != nil {
+		t.Fatalf("failed to shut the hub down: %v", err)
+	}
+
+	client := &Client{hub: h, addr: "shutdown-race"}
+
+	registered := make(chan bool, 1)
+	go func() { registered <- h.Register(t.Context(), client) }()
+
+	select {
+	case accepted := <-registered:
+		if accepted {
+			t.Error("Register accepted a client on a stopped hub")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Register blocked on a stopped hub")
+	}
+
+	unregistered := make(chan struct{})
+	go func() {
+		h.Unregister(client)
+		close(unregistered)
+	}()
+
+	select {
+	case <-unregistered:
+	case <-time.After(time.Second):
+		t.Fatal("Unregister blocked on a stopped hub")
 	}
 }
 

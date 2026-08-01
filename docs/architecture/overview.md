@@ -61,25 +61,33 @@ real thing rather than a copy of it.
 
 **Hub** (`hub.go`) — owns the set of connected clients and the configuration they run under.
 `NewHub(cfg)` resolves the configuration once and keeps it, so the origin allow-list, the message
-size limit, and the rate limit belong to that hub rather than to the process. A single goroutine
-runs `Hub.Run`, selecting over five channels: `register`, `unregister`, `broadcast`, `countReq`,
-and `shutdown`.
+size limit, and the rate limit belong to that hub rather than to the process. `Start()` launches a
+single goroutine — the hub's run loop — which selects over five channels: `register`, `unregister`,
+`broadcast`, `countReq`, and `shutdown`.
 
 That goroutine is the *sole* owner of the client map: registration, unregistration, fan-out, and
-shutdown all happen inside `Run`, so the map needs no lock at all. Broadcasts iterate the map
+shutdown all happen inside the run loop, so the map needs no lock at all. Broadcasts iterate the map
 directly instead of copying it, and the slice of failed clients is scratch space reused across
 messages, which makes the fan-out path allocation-free. The rule that keeps this sound is simple:
 every mutation of the client set must arrive through one of the hub's channels.
 
-Reads obey the same rule. `ClientCount()` sends a reply channel down `countReq` and lets `Run`
-answer it, rather than reading the map from the caller's goroutine. Because `Run` is sequential, a
-reply also proves everything queued before the request has already been processed — which is what
-makes it a usable synchronization barrier in tests.
+Those channels are the hub's own, though — nothing outside it sends on them. What it exports is
+intent: `Register(ctx, client)`, `Unregister(client)`, and `Publish(msg)`. Each one owns the race a
+raw channel send would leave to its caller, because the run loop stops reading the moment shutdown
+is signalled: `Register` and `Publish` report `false` instead of blocking forever, and `Unregister`
+becomes a no-op. Registration additionally gives up when the request context is done, so a client
+whose HTTP request went away never joins. Handing out the channels instead would mean every caller
+re-deriving all of that.
+
+Reads obey the same rule. `ClientCount()` sends a reply channel down `countReq` and lets the run
+loop answer it, rather than reading the map from the caller's goroutine. Because the loop is
+sequential, a reply also proves everything queued before the request has already been processed —
+which is what makes it a usable synchronization barrier in tests.
 
 **Client** (`client.go`) — one per connection, with two goroutines:
 
 - *read pump* — reads frames, enforces the rate limit, normalizes the payload, and hands it to
-  the hub's broadcast channel. Exits on any read error and unregisters the client.
+  `Hub.Publish`. Exits on any read error and unregisters the client.
 - *write pump* — selects over the client's 256-message `send` channel, a 54-second ping ticker, and
   the hub's shutdown channel. Coalesces anything already queued into the current frame, separated by
   newlines, so a burst costs one frame rather than one per message.
@@ -171,14 +179,15 @@ overruns cannot borrow the other's budget:
 The two errors are joined rather than short-circuited, so a hub that overran is still reported when
 the HTTP stage failed too.
 
-The `shutdown` channel appears in every blocking select in the codebase — registration, broadcast,
-and the write pump — so nothing can block shutdown by waiting on a channel nobody will read.
+The `shutdown` channel appears in every blocking select in the codebase — inside `Register`,
+`Unregister`, and `Publish`, and in the write pump's own event loop — so nothing can block shutdown
+by waiting on a channel nobody will read.
 
 ## Concurrency model
 
 | Goroutine        | Count            | Lifetime                       |
 | ---------------- | ---------------- | ------------------------------ |
-| `Hub.Run`        | 1                | Process lifetime               |
+| Hub run loop     | 1                | Process lifetime               |
 | Client read pump | 1 per connection | Until read error or shutdown   |
 | Client write pump| 1 per connection | Until send closed or shutdown  |
 | `ListenAndServe` | 1                | Process lifetime               |

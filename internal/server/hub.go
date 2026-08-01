@@ -12,10 +12,11 @@ import (
 
 // Hub manages all WebSocket client connections and handles message broadcasting.
 //
-// The clients map is owned exclusively by the [Hub.Run] goroutine: registration,
+// The clients map is owned exclusively by the hub's run loop: registration,
 // unregistration, broadcast fan-out, and shutdown all happen there. That single
 // ownership removes lock traffic from the broadcast path entirely, so every
-// mutation of clients must be reached through one of the hub's channels.
+// mutation of clients must be reached through [Hub.Register], [Hub.Unregister],
+// or [Hub.Publish], which hand the work to that goroutine over a channel.
 type Hub struct {
 	// cfg is the resolved configuration every connection of this hub runs
 	// under: its origin allow-list, its message size limit, and its rate
@@ -32,10 +33,10 @@ type Hub struct {
 	unregister chan *Client
 
 	// failed is scratch space reused across broadcasts to avoid allocating a
-	// slice per message. Only Run touches it.
+	// slice per message. Only the run loop touches it.
 	failed []*Client
 
-	// countReq carries a reply channel into the Run goroutine so callers can
+	// countReq carries a reply channel into the run loop so callers can
 	// read the client count without touching the map themselves.
 	countReq chan chan int
 
@@ -70,26 +71,56 @@ func NewHub(cfg *Config) *Hub {
 	return h
 }
 
-// RegisterChan returns the channel used for registering new clients to the hub.
-// This channel is write-only from the caller's perspective.
-func (h *Hub) RegisterChan() chan<- *Client {
-	return h.register
+// Register hands client to the hub's run loop, which adds it to the client set
+// and starts its pumps, and reports whether it was accepted.
+//
+// It returns false without registering anything if the hub is shutting down —
+// which closes every connection itself, so a late arrival must not join — or if
+// ctx is done, meaning the request that brought the client in has gone away. In
+// both cases the caller still owns closing the connection.
+func (h *Hub) Register(ctx context.Context, client *Client) bool {
+	select {
+	case h.register <- client:
+		return true
+
+	case <-h.shutdown:
+		log().Info("rejected websocket client; hub is shutting down", "remote_addr", client.addr)
+		return false
+
+	case <-ctx.Done():
+		return false
+	}
 }
 
-// UnregisterChan returns the channel used for unregistering clients from the hub.
-// This channel is write-only from the caller's perspective.
-func (h *Hub) UnregisterChan() chan<- *Client {
-	return h.unregister
+// Unregister removes client from the hub's client set, closing its send channel.
+// It is a no-op once the hub is shutting down, which tears every client down
+// itself, so a read pump exiting because of that shutdown does not block on a
+// run loop that has stopped reading.
+func (h *Hub) Unregister(client *Client) {
+	select {
+	case h.unregister <- client:
+	case <-h.shutdown:
+	}
 }
 
-// BroadcastChan returns the channel used for broadcasting messages to all clients.
-// This channel is write-only from the caller's perspective.
-func (h *Hub) BroadcastChan() chan<- BroadcastMessage {
-	return h.broadcast
+// Publish hands msg to the hub's run loop for fan-out and reports whether it was
+// accepted. It returns false once the hub is shutting down, rather than blocking
+// forever on a loop that will never read the message.
+//
+// Acceptance means the hub took the message, not that anyone received it:
+// delivery to each client is best-effort, and a client whose buffer is full is
+// dropped instead of allowed to stall the fan-out.
+func (h *Hub) Publish(msg BroadcastMessage) bool {
+	select {
+	case h.broadcast <- msg:
+		return true
+	case <-h.shutdown:
+		return false
+	}
 }
 
 // ClientCount reports how many clients are currently registered. The count is
-// answered by the Run goroutine, which owns the map, so it is consistent with
+// answered by the run loop, which owns the map, so it is consistent with
 // every registration and broadcast the hub has already processed. It returns 0
 // once the hub has stopped.
 func (h *Hub) ClientCount() int {
@@ -105,7 +136,7 @@ func (h *Hub) ClientCount() int {
 
 // Start launches the hub event loop in a goroutine if it is not already running.
 func (h *Hub) Start() {
-	go h.Run()
+	go h.run()
 }
 
 // IsStopped reports whether the hub event loop has exited.
@@ -137,10 +168,10 @@ func (h *Hub) hasStarted() bool {
 	return h.started
 }
 
-// Run starts the hub's main event loop, handling client registration,
+// run is the hub's main event loop, handling client registration,
 // unregistration, and message broadcasting. It runs until shutdown is signalled
-// and should be called in its own goroutine.
-func (h *Hub) Run() {
+// and is launched in its own goroutine by [Hub.Start].
+func (h *Hub) run() {
 	if !h.markStarted() {
 		return
 	}

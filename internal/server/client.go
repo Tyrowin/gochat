@@ -53,12 +53,6 @@ func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 	}
 }
 
-// SendChan returns the client's send channel for reading outgoing messages.
-// This channel is read-only from the caller's perspective.
-func (c *Client) SendChan() <-chan []byte {
-	return c.send
-}
-
 // setupReadConnection configures read deadlines and the pong handler for the
 // WebSocket connection.
 func (c *Client) setupReadConnection() {
@@ -122,22 +116,17 @@ func (c *Client) processMessage(rawMessage []byte) bool {
 		log().Debug("received message", "addr", c.addr, "payload", string(payload))
 	}
 
-	select {
-	case c.hub.broadcast <- BroadcastMessage{Sender: c, Payload: payload}:
-		return true
-	case <-c.hub.shutdown:
+	if !c.hub.Publish(BroadcastMessage{Sender: c, Payload: payload}) {
 		log().Debug("skipping broadcast; hub is shutting down", "addr", c.addr)
 		return false
 	}
+
+	return true
 }
 
 // cleanupReadPump handles cleanup tasks when readPump exits.
 func (c *Client) cleanupReadPump() {
-	select {
-	case c.hub.unregister <- c:
-	case <-c.hub.shutdown:
-	}
-
+	c.hub.Unregister(c)
 	c.closeConnection()
 }
 

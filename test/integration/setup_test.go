@@ -55,7 +55,7 @@ func startHub(t *testing.T, cfg *server.Config) *server.Hub {
 	hub := server.NewHub(cfg)
 	hub.Start()
 
-	// ClientCount is answered by the Run goroutine, so a reply proves the loop
+	// ClientCount is answered by the hub's run loop, so a reply proves the loop
 	// is up.
 	hub.ClientCount()
 

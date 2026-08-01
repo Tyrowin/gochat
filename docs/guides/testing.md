@@ -12,7 +12,7 @@ test/
 ├── unit/                    # package unit — components in isolation
 │   ├── error_handling_test.go   # read/write error paths, registration accounting
 │   ├── handlers_test.go         # health handler, routing
-│   ├── hub_test.go              # hub channels, client count, shutdown lifecycle
+│   ├── hub_test.go              # publish, client count, shutdown lifecycle
 │   └── websocket_test.go        # upgrader config, method and header validation
 ├── integration/             # package integration — real servers over real sockets
 │   ├── setup_test.go            # shared plumbing: test servers, dialing, assertions
@@ -30,8 +30,11 @@ so they exercise the actual handshake, origin check, and pumps. The lifecycle te
 run the real `server.Service` on a real port, driven the way `main` drives it.
 
 The exception is `internal/server/*_internal_test.go`, which covers what the exported API cannot
-reach: the hot paths the benchmarks measure, and the `*http.Server` that `New` builds — its address,
-its timeouts, and its header limit are the service's own, not a caller's.
+reach: the hot paths the benchmarks measure, the `*http.Server` that `New` builds — its address,
+its timeouts, and its header limit are the service's own, not a caller's — and the shutdown race in
+`Hub.Register` and `Hub.Unregister`, which take a `*Client` that cannot be built without a socket
+from outside the package. `Hub.Publish` loses the same race and is tested from `test/unit`, where it
+belongs, because it needs no client at all.
 
 ## Running
 

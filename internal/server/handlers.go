@@ -69,12 +69,9 @@ func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 
 		client := NewClient(conn, h, r.RemoteAddr)
 
-		select {
-		case h.register <- client:
-		case <-h.shutdown:
-			log().Info("rejected websocket client; hub is shutting down", "remote_addr", r.RemoteAddr)
-			client.closeConnection()
-		case <-r.Context().Done():
+		// A rejected client was never added to the hub, so closing it is the
+		// handler's job.
+		if !h.Register(r.Context(), client) {
 			client.closeConnection()
 		}
 	}
