@@ -532,16 +532,16 @@ func reconnectReceiver(t *testing.T, hub *server.Hub, wsURL, serverURL string, o
 }
 
 // testMessageAfterRefill verifies that messages get through again once the
-// bucket has refilled. Since rateLimiter.allow takes the current instant from
-// its caller, this is the one check that the read pump hands it a real clock
-// that advances rather than a frozen or stale one — a unit test driving the
-// limiter directly cannot see that, which is why the sleep stays.
+// bucket has refilled. The unit tests drive the limiter from a fixed instant, so
+// this is the one check that a connection's tokens come back in real time —
+// end to end, over a socket, on the clock production actually runs on. That is
+// why the sleep stays.
 func testMessageAfterRefill(t *testing.T, sender, receiver *websocket.Conn, refillInterval time.Duration) {
 	t.Helper()
 
 	// Not a synchronization sleep: reaching the limiter through a real socket
-	// means going through NewClient, so real wall-clock time is the only clock
-	// this test can advance.
+	// means going through NewClient, which builds a limiter on the real clock,
+	// so wall-clock time is the only clock this test can advance.
 	time.Sleep(refillInterval + 100*time.Millisecond)
 
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "after-refill")); err != nil {

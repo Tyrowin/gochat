@@ -48,7 +48,7 @@ func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 		hub:            hub,
 		addr:           addr,
 		maxMessageSize: cfg.MaxMessageSize,
-		rateLimiter:    newRateLimiter(cfg.RateLimit.Burst, cfg.RateLimit.RefillInterval, time.Now()),
+		rateLimiter:    newRateLimiter(cfg.RateLimit.Burst, cfg.RateLimit.RefillInterval),
 		rateLimit:      cfg.RateLimit,
 	}
 }
@@ -115,11 +115,9 @@ func (c *Client) handleReadError(err error) bool {
 	return true
 }
 
-// checkRateLimit reports whether the client is within its message budget. The
-// read pump is the only reader of the clock on this path; the limiter itself
-// takes the instant as an argument so tests can drive it directly.
+// checkRateLimit reports whether the client is within its message budget.
 func (c *Client) checkRateLimit() bool {
-	if c.rateLimiter.allow(time.Now()) {
+	if c.rateLimiter.allow() {
 		return true
 	}
 

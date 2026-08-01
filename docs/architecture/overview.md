@@ -113,14 +113,24 @@ value. Tokens refill continuously from elapsed time rather than on a timer, so t
 goroutine and no allocation per client. It carries no mutex because only that connection's read pump
 ever touches it; sharing a limiter across goroutines would be a bug.
 
-The bucket does not read the clock: both the constructor and `allow(now)` take the current instant
-from the caller, and the read pump supplies `time.Now()` at the single production call site. That is
-what makes refill observable — the unit tests advance a fixed instant by hand and pin partial refill,
-the cap at capacity, a clock that does not move, and one that goes backwards, none of which can be
-seen from a test that has to spend the real time first. The clock is a parameter rather than a
-`func() time.Time` field on the struct deliberately: a limiter sits by value inside every `Client` and
-`allow` runs once per message, so a function-valued field would add an indirect call to the hot path
-and a word to every connection. Passing the instant costs neither.
+The bucket reads the clock itself on the path that matters. `newRateLimiter` and `allow()` take no
+instant, so the read pump has no time to get wrong and the throttle a connection gets is the one it
+was configured with. Behind each sits an `-At` variant — `newRateLimiterAt(…, now)` and `allowAt(now)`
+— that takes the instant as an argument. That pair is the test seam, and it is what makes refill
+observable: the unit tests advance a fixed instant by hand and pin partial refill, the cap at
+capacity, a clock that does not move, and one that goes backwards, none of which can be seen from a
+test that has to spend the real time first.
+
+The seam is package-scoped, so the compiler cannot keep production code off it; `TestClockSeamIsTestOnly`
+does instead. It parses every non-test file in the package and fails if anything but the two wrappers
+names an `-At` variant, which is what turns "production supplies no instant" from a convention into a
+checked property.
+
+The instant is an argument on the seam rather than a `func() time.Time` field on the struct
+deliberately: a limiter sits by value inside every `Client` and `allow` runs once per message, so a
+function-valued field would add an indirect call to the hot path and a word to every connection. The
+seam costs neither — `newRateLimiterAt` inlines into its wrapper, `allow` is one static call into
+`allowAt`, and the struct is unchanged.
 
 **Origin validation** (`origin.go`) — normalizes the `Origin` header to lowercase `scheme://host` and
 looks it up in a set built once when the hub is constructed. It is a method on that hub's resolved
