@@ -36,7 +36,10 @@ func New(cfg *Config) *Service {
 	return &Service{
 		hub: hub,
 		httpServer: &http.Server{
-			Addr:              cfg.Port,
+			// The hub's resolved port, not the caller's: resolveConfig supplies
+			// the default and rewrites a bare port into ":port", which is the
+			// form http.Server.Addr requires.
+			Addr:              hub.cfg.Port,
 			Handler:           SetupRoutesWithHub(hub),
 			ReadTimeout:       15 * time.Second,
 			ReadHeaderTimeout: 5 * time.Second,

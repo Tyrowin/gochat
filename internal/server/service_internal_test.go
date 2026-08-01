@@ -106,3 +106,35 @@ func TestProductionTimeoutsAllowSlowResponses(t *testing.T) {
 		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
 	}
 }
+
+// TestNewListensOnTheResolvedPort pins the contract documented in
+// docs/reference/configuration.md: SERVER_PORT=9000 and SERVER_PORT=:9000 are
+// equivalent. New must take the port the hub resolved, not the caller's raw
+// value, because http.Server.Addr rejects a bare port.
+func TestNewListensOnTheResolvedPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		port string
+		want string
+	}{
+		{"bare port gains a colon", "18091", ":18091"},
+		{"already qualified is left alone", ":18092", ":18092"},
+		{"host and port are left alone", "127.0.0.1:18093", "127.0.0.1:18093"},
+		{"empty falls back to the default", "", defaultPort},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := NewConfig()
+			cfg.Port = tt.port
+
+			if got := New(cfg).httpServer.Addr; got != tt.want {
+				t.Errorf("Expected addr %q for port %q, got %q", tt.want, tt.port, got)
+			}
+		})
+	}
+}
