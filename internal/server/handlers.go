@@ -39,6 +39,10 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     checkOrigin,
 }
 
+// webSocketHandlerForHub returns the handler for WebSocket upgrade requests
+// against h. It validates that the request uses the GET method, upgrades the
+// HTTP connection to WebSocket, creates a new Client instance, and registers it
+// with the hub, which starts the client's read/write pumps.
 func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -68,13 +72,6 @@ func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 			client.closeConnection()
 		}
 	}
-}
-
-// WebSocketHandler handles WebSocket upgrade requests and manages client connections.
-// It validates that the request uses the GET method, upgrades the HTTP connection
-// to WebSocket, creates a new Client instance, and starts the client's read/write pumps.
-func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
-	webSocketHandlerForHub(GlobalHub()).ServeHTTP(w, r)
 }
 
 // writeStatic serves a fixed body whose length is known ahead of time, skipping

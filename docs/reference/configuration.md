@@ -68,11 +68,11 @@ These are compile-time constants. Changing them requires editing the source.
 | Ping interval                | 54s                        | `internal/server/client.go`   |
 | Read deadline                | 60s, reset on each pong     | `internal/server/client.go`   |
 | Write deadline               | 10s per write               | `internal/server/client.go`   |
-| HTTP read / write timeout    | 15s each                   | `internal/server/http_server.go` |
-| HTTP read header timeout     | 5s                         | `internal/server/http_server.go` |
-| HTTP idle timeout            | 60s                        | `internal/server/http_server.go` |
-| HTTP max header bytes        | 64 KiB                     | `internal/server/http_server.go` |
-| Shutdown budget              | 15s HTTP + 15s hub, 30s cap | `cmd/server/main.go`         |
+| HTTP read / write timeout    | 15s each                   | `internal/server/service.go` |
+| HTTP read header timeout     | 5s                         | `internal/server/service.go` |
+| HTTP idle timeout            | 60s                        | `internal/server/service.go` |
+| HTTP max header bytes        | 64 KiB                     | `internal/server/service.go` |
+| Shutdown budget              | 15s HTTP + 15s hub, 30s cap | `internal/server/service.go` |
 
 ## Examples
 

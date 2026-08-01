@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,9 +61,69 @@ func startHub(t *testing.T) *server.Hub {
 	return hub
 }
 
+// testService is a real [server.Service] running on a real port, driven exactly
+// the way main drives it: New, then Run under a context the test cancels.
+type testService struct {
+	*server.Service
+
+	port string
+	stop context.CancelFunc
+	done chan error
+
+	once   sync.Once
+	runErr error
+}
+
+// startService runs a service on port and returns once it is accepting
+// requests. It is stopped when the test ends if the test did not stop it itself.
+func startService(t *testing.T, port string) *testService {
+	t.Helper()
+
+	cfg := server.NewConfig()
+	cfg.Port = port
+	cfg.AllowedOrigins = []string{testOriginURL, "http://localhost" + port}
+	// Rate limiting is exercised in security_test.go; here it would only throttle
+	// the messages a lifecycle test needs in flight.
+	cfg.RateLimit = server.RateLimitConfig{Burst: 1000, RefillInterval: time.Second}
+
+	// New publishes the config globally, so restore the defaults afterwards.
+	svc := server.New(cfg)
+	t.Cleanup(func() { server.SetConfig(nil) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	svcTest := &testService{Service: svc, port: port, stop: cancel, done: make(chan error, 1)}
+
+	go func() { svcTest.done <- svc.Run(ctx) }()
+	t.Cleanup(func() { _ = svcTest.shutdown(t) })
+
+	testhelpers.WaitForServer(t, svcTest.baseURL()+"/", shutdownBudget)
+	return svcTest
+}
+
+func (s *testService) baseURL() string { return "http://localhost" + s.port }
+
+func (s *testService) wsURL() string { return "ws://localhost" + s.port + "/ws" }
+
+// shutdown cancels the service's context and returns what Run returned. Calling
+// it more than once — which the test cleanup does — replays the first result.
+func (s *testService) shutdown(t *testing.T) error {
+	t.Helper()
+
+	s.once.Do(func() {
+		s.stop()
+		select {
+		case s.runErr = <-s.done:
+		case <-time.After(shutdownBudget):
+			t.Error("Run did not return within the shutdown budget")
+		}
+	})
+
+	return s.runErr
+}
+
 // newTestServer starts an HTTP server backed by a hub of its own, so the client
-// counts a test observes belong to that test alone rather than to whatever the
-// process-wide hub happens to hold. Both are torn down when the test ends.
+// counts a test observes belong to that test alone. Both are torn down when the
+// test ends. Use [startService] instead when the lifecycle itself is under test.
 func newTestServer(t *testing.T) (*httptest.Server, *server.Hub) {
 	t.Helper()
 

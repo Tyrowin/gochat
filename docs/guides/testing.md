@@ -4,29 +4,34 @@ How the suite is organized and how to run, extend, and measure it.
 
 ## Layout
 
-All tests live under `test/`, outside the packages they exercise, so they see `internal/server`
-through its exported API only.
+Almost all tests live under `test/`, outside the packages they exercise, so they see
+`internal/server` through its exported API only.
 
 ```
 test/
 ├── unit/                    # package unit — components in isolation
 │   ├── error_handling_test.go   # read/write error paths, registration accounting
-│   ├── handlers_test.go         # health handler, routing, server construction
+│   ├── handlers_test.go         # health handler, routing
 │   ├── hub_test.go              # hub channels, client count, shutdown lifecycle
 │   └── websocket_test.go        # upgrader config, method and header validation
 ├── integration/             # package integration — real servers over real sockets
 │   ├── setup_test.go            # shared plumbing: test servers, dialing, assertions
 │   ├── multiclient_test.go      # many clients exchanging messages concurrently
 │   ├── security_test.go         # origin validation, size limits, rate limiting
-│   ├── server_test.go           # health endpoint, timeouts, full startup path
-│   ├── shutdown_test.go         # graceful shutdown with and without clients
+│   ├── server_test.go           # health endpoint, full startup path
+│   ├── shutdown_test.go         # graceful shutdown, ordering, clients closed
 │   └── websocket_test.go        # connection lifecycle, broadcasting
 └── testhelpers/             # shared helpers (no tests of its own)
     └── helpers.go
 ```
 
 Integration tests spin up `httptest` servers and dial them with a real `gorilla/websocket` client,
-so they exercise the actual handshake, origin check, and pumps.
+so they exercise the actual handshake, origin check, and pumps. The lifecycle tests go further and
+run the real `server.Service` on a real port, driven the way `main` drives it.
+
+The exception is `internal/server/*_internal_test.go`, which covers what the exported API cannot
+reach: the hot paths the benchmarks measure, and the `*http.Server` that `New` builds — its address,
+its timeouts, and its header limit are the service's own, not a caller's.
 
 ## Running
 
@@ -88,8 +93,9 @@ coverage.
 | `AssertStatusCode` / `AssertContentType` / `AssertBody` | Common assertions over a `Response`                            |
 
 The `integration` package layers its own helpers on top in `setup_test.go` — `newTestServer` (a
-server backed by a hub of its own), `dial` / `dialPair` / `dialClients` (which return only once the
-hub has registered every connection), and `waitForUnregister`. Prefer those inside that package:
+server backed by a hub of its own), `startService` (the real `server.Service`, running on a real
+port, stopped by cancelling its context), `dial` / `dialPair` / `dialClients` (which return only once
+the hub has registered every connection), and `waitForUnregister`. Prefer those inside that package:
 they make client-count assertions exact.
 
 ## Writing tests
@@ -101,10 +107,11 @@ Follow the conventions already in the suite:
 - Use table-driven subtests with `t.Run` for multiple scenarios of one behavior.
 - Cover the failure path, not just the happy one — most bugs in this codebase live in error handling
   and shutdown ordering.
-- Reset shared state. The active config is a package-level global and `server.GlobalHub()` is
-  process-wide; give a test its own hub with `server.SetupRoutesWithHub` (integration tests get this
-  from `newTestServer`) and restore the config with `server.SetConfig(nil)` rather than mutating
-  global state and leaving it changed.
+- Reset shared state. The active config is still a package-level global, and `server.New` publishes
+  the config it is given; restore the defaults with `server.SetConfig(nil)` rather than leaving
+  global state changed. Hubs are not global — give a test its own with `server.SetupRoutesWithHub`,
+  or a whole service of its own with the integration package's `startService`, so the client counts
+  it observes belong to it alone.
 - Prefer waiting on a channel or polling with a deadline over `time.Sleep` for synchronization. The
   hub's `ClientCount()` is answered by its own event loop, so a reply proves every registration,
   unregistration, and broadcast queued before it has been processed — that is the barrier to wait on,

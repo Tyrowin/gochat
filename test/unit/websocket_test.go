@@ -18,6 +18,17 @@ const (
 	errMethodNotAllowed = "Method not allowed. WebSocket endpoint only accepts GET requests."
 )
 
+// serveWebSocket drives req through the application routes bound to a hub of
+// this test's own. The upgrade handler is unexported — the service owns it — so
+// the mux is how these tests reach it.
+func serveWebSocket(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+
+	w := httptest.NewRecorder()
+	newRoutes(t).ServeHTTP(w, req)
+	return w
+}
+
 // TestWebSocketHandlerMethodValidation tests the WebSocket handler's HTTP method validation.
 // It verifies that the handler correctly rejects non-GET requests with the appropriate
 // status code and error message, as WebSocket upgrades require GET requests.
@@ -56,10 +67,7 @@ func TestWebSocketHandlerMethodValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/ws", nil)
-			w := httptest.NewRecorder()
-
-			server.WebSocketHandler(w, req)
+			w := serveWebSocket(t, httptest.NewRequest(tt.method, "/ws", nil))
 
 			resp := w.Result()
 			defer func() { _ = resp.Body.Close() }()
@@ -80,10 +88,7 @@ func TestWebSocketHandlerMethodValidation(t *testing.T) {
 // that don't include proper WebSocket upgrade headers. It verifies that such requests
 // are rejected with a Bad Request status code.
 func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	w := httptest.NewRecorder()
-
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, httptest.NewRequest(http.MethodGet, "/ws", nil))
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -97,10 +102,7 @@ func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
 // Content-Type header when rejecting invalid requests. It verifies that error responses
 // include the appropriate content type for the error message.
 func TestWebSocketHandlerContentType(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/ws", nil)
-	w := httptest.NewRecorder()
-
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, httptest.NewRequest(http.MethodPost, "/ws", nil))
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -122,9 +124,7 @@ func TestWebSocketUpgraderConfiguration(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
 
-	w := httptest.NewRecorder()
-
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, req)
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -146,9 +146,7 @@ func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Key", "x3JJHMbDL1EzLkh9GBhXDw==")
 	req.Header.Set("Origin", "http://localhost:8080")
 
-	w := httptest.NewRecorder()
-
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, req)
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -158,15 +156,22 @@ func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
 	}
 }
 
-// TestStartHub tests that the StartHub function executes without panicking.
-// It verifies that the hub can be started successfully and runs in the background
-// without encountering runtime errors during initialization.
-func TestStartHub(t *testing.T) {
+// TestNewServiceBuildsAServerWithAHub replaces the old StartHub smoke test: the
+// startup path is now server.New, which must assemble a service around a hub
+// without panicking. Running it is covered in test/integration.
+func TestNewServiceBuildsAServerWithAHub(t *testing.T) {
+	// New publishes its config globally, so restore the defaults afterwards.
+	t.Cleanup(func() { server.SetConfig(nil) })
+
 	defer func() {
 		if r := recover(); r != nil {
-			t.Errorf("StartHub panicked: %v", r)
+			t.Errorf("server.New panicked: %v", r)
 		}
 	}()
 
-	server.StartHub()
+	svc := server.New(server.NewConfig())
+
+	if svc.Hub() == nil {
+		t.Fatal("server.New returned a service without a hub")
+	}
 }

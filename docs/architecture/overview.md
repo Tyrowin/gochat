@@ -29,14 +29,14 @@ See [Deploying to production](../guides/deploying-to-production.md).
 ## Code layout
 
 ```
-cmd/server/main.go          Entry point: config → hub → routes → HTTP server → signal handling
+cmd/server/main.go          Entry point: logger, config, signal handling, Service.Run
 internal/server/
+  service.go                The service lifecycle: build, run, and drain in order
   config.go                 Env parsing, defaults, sanitization, the atomic config snapshot
   logging.go                Structured log/slog logger and LOG_LEVEL handling
   routes.go                 ServeMux wiring for /, /ws, /test
   handlers.go               Upgrade handler, health handler, embedded test page
   testpage.html             The /test page, compiled into the binary with go:embed
-  http_server.go            http.Server construction, start/stop, global hub accessor
   hub.go                    Client registry, broadcast fan-out, shutdown coordination
   client.go                 Per-connection read and write pumps
   origin.go                 Origin normalization and allow-list checks
@@ -52,6 +52,12 @@ library. The `server` package is deliberately flat: every file declares `package
 package comment on each file describes that file's slice of responsibility.
 
 ## Components
+
+**Service** (`service.go`) — the whole running server behind two functions. `New(cfg)` builds the
+hub, the routes bound to it, and the `http.Server` that fronts them; `Run(ctx)` starts them and
+drains them when `ctx` is cancelled. Nothing else is exported from the lifecycle, so the shutdown
+ordering below cannot be got wrong by a caller — including a test, which is why the tests drive the
+real thing rather than a copy of it.
 
 **Hub** (`hub.go`) — owns the set of connected clients. A single goroutine runs `Hub.Run`, selecting
 over five channels: `register`, `unregister`, `broadcast`, `countReq`, and `shutdown`.
@@ -139,18 +145,26 @@ its messages being queued indefinitely.
 
 ## Lifecycle
 
-**Startup** (`main.go`): read config → apply it globally → start the hub goroutine → build the mux →
-construct `http.Server` with 15s read/write and 60s idle timeouts → `ListenAndServe` in a goroutine →
-block on either a server error or `SIGINT`/`SIGTERM`.
+`main` supplies the logger, the config, and a context cancelled on `SIGINT`/`SIGTERM`, then calls
+`Run`. It holds no lifecycle logic of its own, so the ordering below is reachable from a test.
 
-**Shutdown**, on signal, in strict order with a 30-second overall cap. `main` builds one
+**Startup** (`New`, then `Run`): `New` applies the config globally, creates the hub, builds the mux,
+and constructs the `http.Server` with 15s read/write and 60s idle timeouts. `Run` starts the hub
+goroutine, calls `ListenAndServe` in a goroutine, and blocks on either a listener error or the
+context being done.
+
+**Shutdown**, on cancellation, in strict order with a 30-second overall cap. `Run` builds one
 `context.Context` carrying that cap and derives a 15-second child for each stage, so a stage that
 overruns cannot borrow the other's budget:
 
-1. `ShutdownServer` (15s context) — stops accepting connections and drains in-flight requests.
+1. `http.Server.Shutdown` (15s context) — stops accepting connections and drains in-flight requests.
+   Upgraded WebSocket connections are hijacked, so this stage does not wait on them.
 2. `Hub.Shutdown` (15s context) — closes the `shutdown` channel, which stops the run loop, closes
    every client connection, and waits on the `WaitGroup` for all pumps to exit. Both of those waits
    share the one 15-second deadline.
+
+The two errors are joined rather than short-circuited, so a hub that overran is still reported when
+the HTTP stage failed too.
 
 The `shutdown` channel appears in every blocking select in the codebase — registration, broadcast,
 and the write pump — so nothing can block shutdown by waiting on a channel nobody will read.
@@ -196,10 +210,12 @@ frame.
 
 ## Design trade-offs
 
-**Global hub and global config.** `GlobalHub()` and the package-level config snapshot are process-wide
-singletons. This keeps `main.go` to a hundred lines, at the cost of testability — the test suite
-works around it with `SetupRoutesWithHub` and `SetConfig`. Threading a `*Hub` and `*Config` through
-explicitly would be the natural refactor if the server ever grows a second hub (rooms, namespaces).
+**Global config.** The hub now belongs to a `Service`, so a process can hold as many as it likes —
+which is what lets tests run a real server per test. The config snapshot is still a process-wide
+singleton: `New` publishes it with `SetConfig`, and the connection paths read it from there rather
+than from a `*Config` threaded through the hub and the clients. That is the remaining obstacle to two
+services with different settings in one process, and the natural next refactor if the server ever
+grows rooms or namespaces.
 
 **No message history, no persistence.** Nothing is stored, so there is no database, no migration
 path, and no state to back up. A client that reconnects starts from silence.

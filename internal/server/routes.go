@@ -4,14 +4,9 @@ package server
 
 import "net/http"
 
-// SetupRoutes configures and returns an HTTP ServeMux with all application routes.
-// It sets up handlers for health check, WebSocket endpoint, and test page.
-func SetupRoutes() *http.ServeMux {
-	return SetupRoutesWithHub(GlobalHub())
-}
-
 // SetupRoutesWithHub configures and returns an HTTP ServeMux bound to the provided hub.
-// It is primarily useful in tests that need route handlers to exercise a specific hub.
+// [New] wires the service's own hub through it; tests use it to exercise the
+// routes against a hub of their own.
 func SetupRoutesWithHub(h *Hub) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", HealthHandler)
