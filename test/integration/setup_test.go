@@ -46,12 +46,13 @@ func shutdownContext(t *testing.T, budget time.Duration) context.Context {
 	return ctx
 }
 
-// startHub runs a hub's event loop and returns once it is provably serving
-// requests, so no caller needs to sleep before using it.
-func startHub(t *testing.T) *server.Hub {
+// startHub runs a hub's event loop under cfg and returns once it is provably
+// serving requests, so no caller needs to sleep before using it. A nil cfg gives
+// the hub the defaults.
+func startHub(t *testing.T, cfg *server.Config) *server.Hub {
 	t.Helper()
 
-	hub := server.NewHub()
+	hub := server.NewHub(cfg)
 	hub.Start()
 
 	// ClientCount is answered by the Run goroutine, so a reply proves the loop
@@ -86,9 +87,7 @@ func startService(t *testing.T, port string) *testService {
 	// the messages a lifecycle test needs in flight.
 	cfg.RateLimit = server.RateLimitConfig{Burst: 1000, RefillInterval: time.Second}
 
-	// New publishes the config globally, so restore the defaults afterwards.
 	svc := server.New(cfg)
-	t.Cleanup(func() { server.SetConfig(nil) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	svcTest := &testService{Service: svc, port: port, stop: cancel, done: make(chan error, 1)}
@@ -121,19 +120,44 @@ func (s *testService) shutdown(t *testing.T) error {
 	return s.runErr
 }
 
-// newTestServer starts an HTTP server backed by a hub of its own, so the client
-// counts a test observes belong to that test alone. Both are torn down when the
-// test ends. Use [startService] instead when the lifecycle itself is under test.
+// newTestServer starts an HTTP server backed by a hub of its own, taking the
+// default configuration plus its own origin. Use [newConfiguredTestServer] when
+// the test varies a setting, and [startService] when the lifecycle itself is
+// under test.
 func newTestServer(t *testing.T) (*httptest.Server, *server.Hub) {
 	t.Helper()
 
-	hub := startHub(t)
-	httpServer := testhelpers.CreateTestServer(t, server.SetupRoutesWithHub(hub))
+	return newConfiguredTestServer(t, nil)
+}
 
-	t.Cleanup(func() {
-		if err := hub.Shutdown(shutdownContext(t, shutdownBudget)); err != nil {
-			t.Errorf("Failed to shut down the test hub: %v", err)
+// newConfiguredTestServer starts an HTTP server backed by a hub of its own,
+// configured by customize, so both the client counts and the settings a test
+// observes belong to that test alone. Both are torn down when the test ends.
+//
+// The hub owns its configuration, so that configuration has to exist before the
+// hub does: the listener is opened first and its URL is already on the
+// allow-list when customize runs. A customize that replaces AllowedOrigins
+// outright is testing the allow-list itself, and overrides that.
+func newConfiguredTestServer(t *testing.T, customize func(cfg *server.Config)) (*httptest.Server, *server.Hub) {
+	t.Helper()
+
+	var hub *server.Hub
+
+	httpServer := testhelpers.CreateTestServer(t, func(baseURL string) http.Handler {
+		cfg := server.NewConfig()
+		cfg.AllowedOrigins = append([]string{baseURL}, cfg.AllowedOrigins...)
+		if customize != nil {
+			customize(cfg)
 		}
+
+		hub = startHub(t, cfg)
+		t.Cleanup(func() {
+			if err := hub.Shutdown(shutdownContext(t, shutdownBudget)); err != nil {
+				t.Errorf("Failed to shut down the test hub: %v", err)
+			}
+		})
+
+		return server.SetupRoutesWithHub(hub)
 	})
 
 	return httpServer, hub
@@ -226,20 +250,6 @@ func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) 
 		return
 	}
 	t.Fatalf("Unexpected error while waiting for absence of message: %v", err)
-}
-
-func configureServerForTest(t *testing.T, baseURL string, customize func(cfg *server.Config)) {
-	t.Helper()
-
-	cfg := server.NewConfig()
-	cfg.AllowedOrigins = append([]string{baseURL}, cfg.AllowedOrigins...)
-	if customize != nil {
-		customize(cfg)
-	}
-	server.SetConfig(cfg)
-	t.Cleanup(func() {
-		server.SetConfig(nil)
-	})
 }
 
 func newOriginHeader(origin string) http.Header {

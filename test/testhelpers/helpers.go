@@ -26,13 +26,19 @@ type ServerTimeouts struct {
 	Idle  time.Duration
 }
 
-// CreateTestServer creates a test HTTP server with the given handler.
-// It returns a running httptest.Server that is closed when the test ends.
-func CreateTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+// CreateTestServer creates a test HTTP server whose handler is built from the
+// server's own base URL — a hub that has to allow its own origin, for instance.
+// The listener is opened before build is called, so the URL is already known by
+// then. It returns a running httptest.Server that is closed when the test ends.
+func CreateTestServer(t *testing.T, build func(baseURL string) http.Handler) *httptest.Server {
 	t.Helper()
 
-	server := httptest.NewServer(handler)
+	server := httptest.NewUnstartedServer(nil)
 	t.Cleanup(server.Close)
+
+	server.Config.Handler = build("http://" + server.Listener.Addr().String())
+	server.Start()
+
 	return server
 }
 

@@ -12,6 +12,8 @@ import (
 // It verifies that the complete server setup including routing, handlers, and HTTP responses
 // work correctly together in a real server environment.
 func TestHealthEndpointIntegration(t *testing.T) {
+	t.Parallel()
+
 	testServer, _ := newTestServer(t)
 
 	resp := testhelpers.MakeRequest(t, http.MethodGet, testServer.URL+"/")
@@ -25,6 +27,8 @@ func TestHealthEndpointIntegration(t *testing.T) {
 // is registered as the ServeMux fallback, so every unmatched path returns the
 // health response rather than a 404.
 func TestUnmatchedPathsServeHealth(t *testing.T) {
+	t.Parallel()
+
 	testServer, _ := newTestServer(t)
 
 	resp := testhelpers.MakeRequest(t, http.MethodGet, testServer.URL+"/nonexistent")
@@ -41,6 +45,8 @@ func TestUnmatchedPathsServeHealth(t *testing.T) {
 // The HTTP settings that service applies are pinned in
 // internal/server/service_internal_test.go, where they are reachable.
 func TestFullServerIntegration(t *testing.T) {
+	t.Parallel()
+
 	svc := startService(t, ":18086")
 
 	resp := testhelpers.MakeRequest(t, http.MethodGet, svc.baseURL()+"/")

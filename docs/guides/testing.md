@@ -50,10 +50,10 @@ go test -v -race ./test/unit/...                # one package
 go test -v -race -run TestHubShutdown ./test/unit  # one test
 ```
 
-The integration suite takes roughly 7.5 seconds — what remains is a handful of tests that wait on
-real timeouts, such as the rate-limiter refill; the unit suite finishes in about 2 seconds. Always
-keep `-race` on — the hub, the client pumps, and the
-config store are all concurrent.
+The integration suite takes roughly 1.5 seconds and the unit suite under a second, because both run
+their tests in parallel — each owns its hub, so there is no process state to serialize them. What is
+left is a handful of tests that wait on real timeouts, such as the rate-limiter refill. Always keep
+`-race` on — the hub and the client pumps are concurrent, and the suite now runs concurrently too.
 
 ## Coverage
 
@@ -80,7 +80,7 @@ coverage.
 
 | Helper                                            | Purpose                                                             |
 | ------------------------------------------------- | ------------------------------------------------------------------- |
-| `CreateTestServer(t, handler)`                    | `httptest` server for a handler, closed when the test ends           |
+| `CreateTestServer(t, build)`                      | `httptest` server whose handler is built from its own base URL, closed when the test ends |
 | `CreateTestServerWithTimeouts(t, handler, ServerTimeouts)` | Same, with explicit read/write/idle HTTP timeouts           |
 | `WaitFor(t, timeout, what, cond)`                 | Poll a condition to a deadline — use instead of `time.Sleep`         |
 | `WaitForServer(t, url, timeout)`                  | Block until a just-started server accepts requests                   |
@@ -92,11 +92,16 @@ coverage.
 | `MakeRequest(t, method, url)`                     | HTTP request, fully read; returns a `Response` with the body closed  |
 | `AssertStatusCode` / `AssertContentType` / `AssertBody` | Common assertions over a `Response`                            |
 
+`CreateTestServer` takes a builder rather than a handler because the hub owns its configuration and
+usually has to allow the server's own origin — which means the config, and therefore the hub, has to
+exist before the handler does. The listener is opened first and its URL passed to `build`.
+
 The `integration` package layers its own helpers on top in `setup_test.go` — `newTestServer` (a
-server backed by a hub of its own), `startService` (the real `server.Service`, running on a real
-port, stopped by cancelling its context), `dial` / `dialPair` / `dialClients` (which return only once
-the hub has registered every connection), and `waitForUnregister`. Prefer those inside that package:
-they make client-count assertions exact.
+server backed by a hub of its own, on the default settings), `newConfiguredTestServer` (the same,
+with a callback that varies the config first), `startService` (the real `server.Service`, running on
+a real port, stopped by cancelling its context), `dial` / `dialPair` / `dialClients` (which return
+only once the hub has registered every connection), and `waitForUnregister`. Prefer those inside that
+package: they make client-count assertions exact.
 
 ## Writing tests
 
@@ -107,11 +112,13 @@ Follow the conventions already in the suite:
 - Use table-driven subtests with `t.Run` for multiple scenarios of one behavior.
 - Cover the failure path, not just the happy one — most bugs in this codebase live in error handling
   and shutdown ordering.
-- Reset shared state. The active config is still a package-level global, and `server.New` publishes
-  the config it is given; restore the defaults with `server.SetConfig(nil)` rather than leaving
-  global state changed. Hubs are not global — give a test its own with `server.SetupRoutesWithHub`,
-  or a whole service of its own with the integration package's `startService`, so the client counts
-  it observes belong to it alone.
+- Own your state, then run in parallel. Nothing configurable is process-wide: give a test its own hub
+  with `server.NewHub(cfg)` and `server.SetupRoutesWithHub`, or a whole service of its own with the
+  integration package's `startService`, so both the client counts and the settings it observes belong
+  to it alone. A test that does that should call `t.Parallel()`. The one thing still shared by the
+  process is the logger, so `TestShutdownStopsAcceptingBeforeDrainingClients` — which reads the
+  shutdown ordering off `server.SetLogger` — stays serial. Fixed listen ports are fine in parallel as
+  long as no two tests pick the same one.
 - Prefer waiting on a channel or polling with a deadline over `time.Sleep` for synchronization. The
   hub's `ClientCount()` is answered by its own event loop, so a reply proves every registration,
   unregistration, and broadcast queued before it has been processed — that is the barrier to wait on,

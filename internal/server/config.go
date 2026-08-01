@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -34,19 +33,15 @@ type Config struct {
 	RateLimit      RateLimitConfig
 }
 
-// configSnapshot is an immutable, fully resolved view of the configuration.
-// It is published atomically so hot paths (origin checks, client construction)
-// can read it without locking.
-type configSnapshot struct {
-	cfg      Config
+// resolvedConfig is an immutable, fully resolved view of the configuration:
+// defaults substituted and the origin allow-list turned into a lookup set. A
+// [Hub] owns one, built once at construction, so the hot paths (origin checks,
+// client construction) read it without locking and two hubs in one process can
+// be configured differently.
+type resolvedConfig struct {
+	Config
 	origins  map[string]struct{}
 	allowAll bool
-}
-
-var activeConfig atomic.Pointer[configSnapshot]
-
-func init() {
-	SetConfig(nil)
 }
 
 func defaultConfig() Config {
@@ -61,62 +56,50 @@ func defaultConfig() Config {
 	}
 }
 
-// newConfigSnapshot substitutes defaults for invalid values and resolves the
-// origin allow-list into a lookup set, returning the snapshot to publish.
-func newConfigSnapshot(cfg Config) *configSnapshot {
+// resolveConfig substitutes defaults for invalid values and resolves the origin
+// allow-list into a lookup set. A nil cfg resolves to the defaults.
+//
+// The caller's Config is copied, so mutating it afterwards cannot change a hub
+// that has already been built from it. The result is never mutated again.
+func resolveConfig(cfg *Config) resolvedConfig {
+	resolved := defaultConfig()
+	if cfg != nil {
+		resolved = Config{
+			Port:           cfg.Port,
+			AllowedOrigins: slices.Clone(cfg.AllowedOrigins),
+			MaxMessageSize: cfg.MaxMessageSize,
+			RateLimit:      cfg.RateLimit,
+		}
+	}
+
 	switch {
-	case cfg.Port == "":
-		cfg.Port = defaultPort
-	case !strings.Contains(cfg.Port, ":"):
-		cfg.Port = ":" + cfg.Port
+	case resolved.Port == "":
+		resolved.Port = defaultPort
+	case !strings.Contains(resolved.Port, ":"):
+		resolved.Port = ":" + resolved.Port
 	}
 
-	if cfg.MaxMessageSize <= 0 {
-		cfg.MaxMessageSize = defaultMaxMessageSize
+	if resolved.MaxMessageSize <= 0 {
+		resolved.MaxMessageSize = defaultMaxMessageSize
 	}
 
-	if cfg.RateLimit.Burst <= 0 {
-		cfg.RateLimit.Burst = defaultRateLimitBurst
+	if resolved.RateLimit.Burst <= 0 {
+		resolved.RateLimit.Burst = defaultRateLimitBurst
 	}
 
-	if cfg.RateLimit.RefillInterval <= 0 {
-		cfg.RateLimit.RefillInterval = defaultRateLimitRefill
+	if resolved.RateLimit.RefillInterval <= 0 {
+		resolved.RateLimit.RefillInterval = defaultRateLimitRefill
 	}
 
-	normalizedOrigins, allowAll := normalizeOrigins(cfg.AllowedOrigins)
-	cfg.AllowedOrigins = normalizedOrigins
+	normalizedOrigins, allowAll := normalizeOrigins(resolved.AllowedOrigins)
+	resolved.AllowedOrigins = normalizedOrigins
 
 	origins := make(map[string]struct{}, len(normalizedOrigins))
 	for _, origin := range normalizedOrigins {
 		origins[origin] = struct{}{}
 	}
 
-	return &configSnapshot{cfg: cfg, origins: origins, allowAll: allowAll}
-}
-
-// SetConfig applies the provided configuration. Passing nil resets to defaults.
-func SetConfig(cfg *Config) {
-	if cfg == nil {
-		activeConfig.Store(newConfigSnapshot(defaultConfig()))
-		return
-	}
-
-	activeConfig.Store(newConfigSnapshot(Config{
-		Port:           cfg.Port,
-		AllowedOrigins: slices.Clone(cfg.AllowedOrigins),
-		MaxMessageSize: cfg.MaxMessageSize,
-		RateLimit:      cfg.RateLimit,
-	}))
-}
-
-// currentSnapshot returns the active resolved configuration without copying.
-// Callers must treat the result as read-only.
-func currentSnapshot() *configSnapshot {
-	if snap := activeConfig.Load(); snap != nil {
-		return snap
-	}
-
-	return newConfigSnapshot(defaultConfig())
+	return resolvedConfig{Config: resolved, origins: origins, allowAll: allowAll}
 }
 
 // NewConfig creates a Config instance populated with default values for all settings.

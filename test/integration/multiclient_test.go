@@ -28,17 +28,25 @@ const (
 // TestMultipleClientsMessageExchange tests complex message exchange scenarios
 // between multiple clients connected to the hub.
 func TestMultipleClientsMessageExchange(t *testing.T) {
+	t.Parallel()
+
 	t.Run("Five clients sending and receiving messages", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 		testFiveClientsSendingAndReceiving(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
 
 	t.Run("Clients joining and leaving dynamically", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 		testDynamicJoiningAndLeaving(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
 
 	t.Run("Rapid message exchange between clients", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 		testRapidMessageExchange(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
@@ -50,22 +58,25 @@ func TestMultipleClientsMessageExchange(t *testing.T) {
 func newMulticlientServer(t *testing.T) (*httptest.Server, *server.Hub) {
 	t.Helper()
 
-	testServer, hub := newTestServer(t)
-	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
+	return newConfiguredTestServer(t, func(cfg *server.Config) {
 		cfg.RateLimit = server.RateLimitConfig{Burst: 1000, RefillInterval: time.Second}
 	})
-
-	return testServer, hub
 }
 
 // TestMultipleClientsConcurrentOperations tests concurrent operations with multiple clients.
 func TestMultipleClientsConcurrentOperations(t *testing.T) {
+	t.Parallel()
+
 	t.Run("Concurrent client connections and disconnections", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, _ := newMulticlientServer(t)
 		testConcurrentConnectionsAndDisconnections(t, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
 
 	t.Run("Concurrent message sending from multiple clients", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 		testConcurrentMessageSending(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 	})
@@ -73,7 +84,11 @@ func TestMultipleClientsConcurrentOperations(t *testing.T) {
 
 // TestMultipleClientsEdgeCases tests edge cases with multiple clients.
 func TestMultipleClientsEdgeCases(t *testing.T) {
+	t.Parallel()
+
 	t.Run("Single client broadcasting to itself", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 		conn := dial(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 
@@ -83,6 +98,8 @@ func TestMultipleClientsEdgeCases(t *testing.T) {
 	})
 
 	t.Run("All clients disconnecting simultaneously", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 
 		const numClients = 5
@@ -105,6 +122,8 @@ func TestMultipleClientsEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Client sending empty content messages", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 		connections := dialClients(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL, 2)
 
@@ -117,6 +136,8 @@ func TestMultipleClientsEdgeCases(t *testing.T) {
 	})
 
 	t.Run("Clients sending very long content", func(t *testing.T) {
+		t.Parallel()
+
 		testServer, hub := newMulticlientServer(t)
 		connections := dialClients(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL, 2)
 

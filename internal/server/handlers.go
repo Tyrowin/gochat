@@ -32,11 +32,17 @@ var (
 // the connection count grows.
 var writeBufferPool = &sync.Pool{}
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	WriteBufferPool: writeBufferPool,
-	CheckOrigin:     checkOrigin,
+// newUpgrader builds the upgrader for one hub. CheckOrigin is bound to that
+// hub's resolved configuration, so the allow-list is per hub rather than per
+// process; the write buffer pool is deliberately not, since sharing it is what
+// keeps memory flat as the connection count grows.
+func newUpgrader(cfg *resolvedConfig) websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		WriteBufferPool: writeBufferPool,
+		CheckOrigin:     cfg.checkOrigin,
+	}
 }
 
 // webSocketHandlerForHub returns the handler for WebSocket upgrade requests
@@ -55,7 +61,7 @@ func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 			return
 		}
 
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := h.upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log().Warn("websocket upgrade failed", "remote_addr", r.RemoteAddr, "error", err)
 			return

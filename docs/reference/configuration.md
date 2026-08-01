@@ -9,6 +9,11 @@ and no configuration file.
 An annotated template lives in [`.env.example`](../../.env.example). The process does not read
 `.env` itself — use your shell, `docker compose`, or a systemd unit to load it.
 
+The parsed `Config` is resolved once, when the hub is built: defaults are substituted for anything
+invalid and the allow-list is normalized into a lookup set. That resolved value belongs to the hub,
+so every connection it accepts runs under the settings it was given — nothing is process-wide, and
+nothing can be changed while the server is running.
+
 ## Variables
 
 | Variable                     | Type                   | Default              | Effect                                                                              |
@@ -50,8 +55,8 @@ Specifics:
 
 - The port is part of the host: `http://localhost:8080` does not match `http://localhost:3000`.
 - Paths are ignored: `https://example.com/app` is stored as `https://example.com`.
-- Entries with no scheme or no host (`example.com`, `localhost:8080`) are rejected at startup with
-  an `ignoring invalid origin in configuration` warning.
+- Entries with no scheme or no host (`example.com`, `localhost:8080`) are rejected when the hub is
+  built, with an `ignoring invalid origin in configuration` warning.
 - A request with **no** `Origin` header is rejected. Browsers always send one; non-browser clients
   must set it explicitly.
 - `*` anywhere in the list allows every origin, including requests whose `Origin` is otherwise

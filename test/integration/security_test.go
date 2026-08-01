@@ -57,23 +57,33 @@ func assertConnectionSucceeds(t *testing.T, wsURL string, header http.Header, or
 	}
 }
 
-// Helper function to test missing origin header
-func testMissingOriginHeader(t *testing.T, wsURL, serverURL string) {
+// newOriginTestServer starts a server whose hub allows exactly origins and
+// nothing else, and returns the ws:// URL of its endpoint. The allow-list
+// belongs to the hub, so every case below gets a server of its own instead of
+// reconfiguring a shared one.
+func newOriginTestServer(t *testing.T, origins ...string) string {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{serverURL}
+
+	testServer, _ := newConfiguredTestServer(t, func(cfg *server.Config) {
+		cfg.AllowedOrigins = origins
 	})
+
+	return buildWebSocketURL(t, testServer.URL)
+}
+
+// Helper function to test missing origin header
+func testMissingOriginHeader(t *testing.T) {
+	t.Helper()
+	wsURL := newOriginTestServer(t, exampleOriginHTTP)
 
 	header := http.Header{}
 	assertConnectionFails(t, wsURL, header, "Expected connection to fail with missing origin")
 }
 
 // Helper function to test empty origin header
-func testEmptyOriginHeader(t *testing.T, wsURL, serverURL string) {
+func testEmptyOriginHeader(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{serverURL}
-	})
+	wsURL := newOriginTestServer(t, exampleOriginHTTP)
 
 	header := http.Header{}
 	header.Set("Origin", "")
@@ -81,11 +91,9 @@ func testEmptyOriginHeader(t *testing.T, wsURL, serverURL string) {
 }
 
 // Helper function to test malformed origins
-func testMalformedOrigins(t *testing.T, wsURL, serverURL string) {
+func testMalformedOrigins(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{serverURL}
-	})
+	wsURL := newOriginTestServer(t, exampleOriginHTTP)
 
 	malformedOrigins := []string{
 		"not-a-url",
@@ -104,11 +112,9 @@ func testMalformedOrigins(t *testing.T, wsURL, serverURL string) {
 }
 
 // Helper function to test case sensitivity
-func testCaseSensitivity(t *testing.T, wsURL, serverURL string) {
+func testCaseSensitivity(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{exampleOriginHTTP}
-	})
+	wsURL := newOriginTestServer(t, exampleOriginHTTP)
 
 	caseVariations := []string{
 		"http://EXAMPLE.COM",
@@ -126,11 +132,9 @@ func testCaseSensitivity(t *testing.T, wsURL, serverURL string) {
 // Helper function to test wildcard origin. "*" accepts every origin that is
 // present at all, including ones that do not parse as a URL — see
 // docs/reference/configuration.md#origin-matching.
-func testWildcardOrigin(t *testing.T, wsURL, serverURL string) {
+func testWildcardOrigin(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{"*"}
-	})
+	wsURL := newOriginTestServer(t, "*")
 
 	testOrigins := []string{
 		exampleOriginHTTP,
@@ -150,22 +154,18 @@ func testWildcardOrigin(t *testing.T, wsURL, serverURL string) {
 }
 
 // Helper function to test that a missing Origin is rejected even under "*".
-func testWildcardStillRequiresOrigin(t *testing.T, wsURL, serverURL string) {
+func testWildcardStillRequiresOrigin(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{"*"}
-	})
+	wsURL := newOriginTestServer(t, "*")
 
 	assertConnectionFails(t, wsURL, http.Header{},
 		"Expected a request with no Origin header to be rejected even under \"*\"")
 }
 
 // Helper function to test different port rejection
-func testDifferentPort(t *testing.T, wsURL, serverURL string) {
+func testDifferentPort(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{"http://localhost:8080"}
-	})
+	wsURL := newOriginTestServer(t, "http://localhost:8080")
 
 	header := http.Header{}
 	header.Set("Origin", "http://localhost:9090")
@@ -173,11 +173,9 @@ func testDifferentPort(t *testing.T, wsURL, serverURL string) {
 }
 
 // Helper function to test path component handling
-func testPathComponentIgnored(t *testing.T, wsURL, serverURL string) {
+func testPathComponentIgnored(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{exampleOriginHTTP}
-	})
+	wsURL := newOriginTestServer(t, exampleOriginHTTP)
 
 	header := http.Header{}
 	header.Set("Origin", "http://example.com/some/path")
@@ -185,11 +183,9 @@ func testPathComponentIgnored(t *testing.T, wsURL, serverURL string) {
 }
 
 // Helper function to test HTTP vs HTTPS scheme difference
-func testSchemeDifference(t *testing.T, wsURL, serverURL string) {
+func testSchemeDifference(t *testing.T) {
 	t.Helper()
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{exampleOriginHTTP}
-	})
+	wsURL := newOriginTestServer(t, exampleOriginHTTP)
 
 	header := http.Header{}
 	header.Set("Origin", "https://example.com")
@@ -198,55 +194,74 @@ func testSchemeDifference(t *testing.T, wsURL, serverURL string) {
 
 // TestOriginValidationEdgeCases tests various edge cases for origin validation.
 func TestOriginValidationEdgeCases(t *testing.T) {
-	testServer, _ := newTestServer(t)
-	wsURL := buildWebSocketURL(t, testServer.URL)
+	t.Parallel()
 
 	t.Run("Missing Origin header", func(t *testing.T) {
-		testMissingOriginHeader(t, wsURL, testServer.URL)
+		t.Parallel()
+		testMissingOriginHeader(t)
 	})
 
 	t.Run("Empty Origin header", func(t *testing.T) {
-		testEmptyOriginHeader(t, wsURL, testServer.URL)
+		t.Parallel()
+		testEmptyOriginHeader(t)
 	})
 
 	t.Run("Malformed Origin URL", func(t *testing.T) {
-		testMalformedOrigins(t, wsURL, testServer.URL)
+		t.Parallel()
+		testMalformedOrigins(t)
 	})
 
 	t.Run("Case sensitivity in origin matching", func(t *testing.T) {
-		testCaseSensitivity(t, wsURL, testServer.URL)
+		t.Parallel()
+		testCaseSensitivity(t)
 	})
 
 	t.Run("Wildcard origin configuration", func(t *testing.T) {
-		testWildcardOrigin(t, wsURL, testServer.URL)
+		t.Parallel()
+		testWildcardOrigin(t)
 	})
 
 	t.Run("Wildcard still requires an Origin header", func(t *testing.T) {
-		testWildcardStillRequiresOrigin(t, wsURL, testServer.URL)
+		t.Parallel()
+		testWildcardStillRequiresOrigin(t)
 	})
 
 	t.Run("Origin with different port", func(t *testing.T) {
-		testDifferentPort(t, wsURL, testServer.URL)
+		t.Parallel()
+		testDifferentPort(t)
 	})
 
 	t.Run("Origin with path component ignored", func(t *testing.T) {
-		testPathComponentIgnored(t, wsURL, testServer.URL)
+		t.Parallel()
+		testPathComponentIgnored(t)
 	})
 
 	t.Run("HTTP vs HTTPS scheme difference", func(t *testing.T) {
-		testSchemeDifference(t, wsURL, testServer.URL)
+		t.Parallel()
+		testSchemeDifference(t)
 	})
 }
 
-// Helper function to test message exactly at size limit
-func testMessageAtSizeLimit(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
+// newSizeLimitedServer starts a server whose hub caps messages at limit and
+// returns that hub, the ws:// URL of its endpoint, and the origin to dial from.
+// The limit belongs to the hub, so every case below gets a server of its own.
+func newSizeLimitedServer(t *testing.T, limit int64) (hub *server.Hub, wsURL, origin string) {
 	t.Helper()
-	const limit int64 = 100
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
+
+	testServer, hub := newConfiguredTestServer(t, func(cfg *server.Config) {
 		cfg.MaxMessageSize = limit
 	})
 
-	sender, receiver := dialPair(t, hub, wsURL, serverURL)
+	return hub, buildWebSocketURL(t, testServer.URL), testServer.URL
+}
+
+// Helper function to test message exactly at size limit
+func testMessageAtSizeLimit(t *testing.T) {
+	t.Helper()
+	const limit int64 = 100
+
+	hub, wsURL, origin := newSizeLimitedServer(t, limit)
+	sender, receiver := dialPair(t, hub, wsURL, origin)
 
 	// Create a message that's exactly at the limit.
 	// JSON overhead: {"content":""} = 14 bytes, so content needs to be limit - 14
@@ -292,14 +307,12 @@ func testMessageAtSizeLimit(t *testing.T, hub *server.Hub, wsURL, serverURL stri
 }
 
 // Helper function to test message one byte over limit
-func testMessageOneByteOverLimit(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
+func testMessageOneByteOverLimit(t *testing.T) {
 	t.Helper()
 	const limit int64 = 100
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.MaxMessageSize = limit
-	})
 
-	sender, receiver := dialPair(t, hub, wsURL, serverURL)
+	hub, wsURL, origin := newSizeLimitedServer(t, limit)
+	sender, receiver := dialPair(t, hub, wsURL, origin)
 
 	// Create message that exceeds limit by 1 byte
 	oversizedContent := strings.Repeat("A", int(limit)+1)
@@ -313,14 +326,12 @@ func testMessageOneByteOverLimit(t *testing.T, hub *server.Hub, wsURL, serverURL
 }
 
 // Helper function to test very large message well over limit
-func testVeryLargeMessage(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
+func testVeryLargeMessage(t *testing.T) {
 	t.Helper()
 	const limit int64 = 64
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.MaxMessageSize = limit
-	})
 
-	sender, receiver := dialPair(t, hub, wsURL, serverURL)
+	hub, wsURL, origin := newSizeLimitedServer(t, limit)
+	sender, receiver := dialPair(t, hub, wsURL, origin)
 
 	// Create a very large message
 	hugeContent := strings.Repeat("X", int(limit)*10)
@@ -342,14 +353,12 @@ func testVeryLargeMessage(t *testing.T, hub *server.Hub, wsURL, serverURL string
 }
 
 // Helper function to test multiple small messages within limit
-func testMultipleSmallMessages(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
+func testMultipleSmallMessages(t *testing.T) {
 	t.Helper()
 	const limit int64 = 200
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.MaxMessageSize = limit
-	})
 
-	sender, receiver := dialPair(t, hub, wsURL, serverURL)
+	hub, wsURL, origin := newSizeLimitedServer(t, limit)
+	sender, receiver := dialPair(t, hub, wsURL, origin)
 
 	// Send multiple small messages
 	for i := range 5 {
@@ -370,14 +379,12 @@ func testMultipleSmallMessages(t *testing.T, hub *server.Hub, wsURL, serverURL s
 }
 
 // Helper function to test zero-length message
-func testZeroLengthMessage(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
+func testZeroLengthMessage(t *testing.T) {
 	t.Helper()
 	const limit int64 = 100
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.MaxMessageSize = limit
-	})
 
-	sender, receiver := dialPair(t, hub, wsURL, serverURL)
+	hub, wsURL, origin := newSizeLimitedServer(t, limit)
+	sender, receiver := dialPair(t, hub, wsURL, origin)
 
 	// Send message with empty content
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "")); err != nil {
@@ -410,40 +417,43 @@ func testZeroLengthMessage(t *testing.T, hub *server.Hub, wsURL, serverURL strin
 
 // TestMessageSizeLimitEdgeCases tests various edge cases for message size validation.
 func TestMessageSizeLimitEdgeCases(t *testing.T) {
+	t.Parallel()
+
 	t.Run("Message exactly at size limit", func(t *testing.T) {
-		testServer, hub := newTestServer(t)
-		testMessageAtSizeLimit(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
+		t.Parallel()
+		testMessageAtSizeLimit(t)
 	})
 
 	t.Run("Message one byte over limit", func(t *testing.T) {
-		testServer, hub := newTestServer(t)
-		testMessageOneByteOverLimit(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
+		t.Parallel()
+		testMessageOneByteOverLimit(t)
 	})
 
 	t.Run("Very large message well over limit", func(t *testing.T) {
-		testServer, hub := newTestServer(t)
-		testVeryLargeMessage(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
+		t.Parallel()
+		testVeryLargeMessage(t)
 	})
 
 	t.Run("Multiple small messages within limit", func(t *testing.T) {
-		testServer, hub := newTestServer(t)
-		testMultipleSmallMessages(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
+		t.Parallel()
+		testMultipleSmallMessages(t)
 	})
 
 	t.Run("Zero-length message", func(t *testing.T) {
-		testServer, hub := newTestServer(t)
-		testZeroLengthMessage(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
+		t.Parallel()
+		testZeroLengthMessage(t)
 	})
 }
 
 // Helper function to test invalid origin with oversized message
-func testInvalidOriginWithOversizedMessage(t *testing.T, wsURL, serverURL string) {
+func testInvalidOriginWithOversizedMessage(t *testing.T) {
 	t.Helper()
-	const limit int64 = 64
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
+
+	testServer, _ := newConfiguredTestServer(t, func(cfg *server.Config) {
 		cfg.AllowedOrigins = []string{"http://allowed.com"}
-		cfg.MaxMessageSize = limit
+		cfg.MaxMessageSize = 64
 	})
+	wsURL := buildWebSocketURL(t, testServer.URL)
 
 	header := http.Header{}
 	header.Set("Origin", "http://blocked.com")
@@ -451,11 +461,11 @@ func testInvalidOriginWithOversizedMessage(t *testing.T, wsURL, serverURL string
 }
 
 // Helper function to test valid origin with message size and rate limits
-func testValidOriginWithSizeAndRateLimits(t *testing.T, hub *server.Hub, wsURL, serverURL string) {
+func testValidOriginWithSizeAndRateLimits(t *testing.T) {
 	t.Helper()
 	const burst = 3
-	configureServerForTest(t, serverURL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{serverURL}
+
+	testServer, hub := newConfiguredTestServer(t, func(cfg *server.Config) {
 		cfg.MaxMessageSize = 100
 		cfg.RateLimit = server.RateLimitConfig{
 			Burst:          burst,
@@ -463,7 +473,7 @@ func testValidOriginWithSizeAndRateLimits(t *testing.T, hub *server.Hub, wsURL, 
 		}
 	})
 
-	sender, receiver := dialPair(t, hub, wsURL, serverURL)
+	sender, receiver := dialPair(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
 
 	// Send messages up to rate limit
 	for i := range burst {
@@ -489,13 +499,15 @@ func testValidOriginWithSizeAndRateLimits(t *testing.T, hub *server.Hub, wsURL, 
 
 // TestSecurityConstraintsCombined tests combinations of security constraints.
 func TestSecurityConstraintsCombined(t *testing.T) {
+	t.Parallel()
+
 	t.Run("Invalid origin with oversized message", func(t *testing.T) {
-		testServer, _ := newTestServer(t)
-		testInvalidOriginWithOversizedMessage(t, buildWebSocketURL(t, testServer.URL), testServer.URL)
+		t.Parallel()
+		testInvalidOriginWithOversizedMessage(t)
 	})
 
 	t.Run("Valid origin with message size and rate limits", func(t *testing.T) {
-		testServer, hub := newTestServer(t)
-		testValidOriginWithSizeAndRateLimits(t, hub, buildWebSocketURL(t, testServer.URL), testServer.URL)
+		t.Parallel()
+		testValidOriginWithSizeAndRateLimits(t)
 	})
 }

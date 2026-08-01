@@ -16,14 +16,10 @@ type rateLimiter struct {
 	last     time.Time
 }
 
+// newRateLimiter builds a full bucket of capacity tokens that refills over
+// interval. Both must be positive: [resolveConfig] substitutes a default for
+// anything else before a hub — and therefore a Client — ever sees it.
 func newRateLimiter(capacity int, interval time.Duration) rateLimiter {
-	if capacity <= 0 {
-		capacity = 1
-	}
-	if interval <= 0 {
-		interval = time.Second
-	}
-
 	perNano := float64(capacity) / float64(interval)
 	if perNano <= 0 {
 		perNano = float64(capacity)

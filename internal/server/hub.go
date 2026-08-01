@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/gorilla/websocket"
 )
 
 // Hub manages all WebSocket client connections and handles message broadcasting.
@@ -15,6 +17,15 @@ import (
 // ownership removes lock traffic from the broadcast path entirely, so every
 // mutation of clients must be reached through one of the hub's channels.
 type Hub struct {
+	// cfg is the resolved configuration every connection of this hub runs
+	// under: its origin allow-list, its message size limit, and its rate
+	// limit. It is set once by [NewHub] and never mutated, so the connection
+	// paths read it without synchronization.
+	cfg resolvedConfig
+
+	// upgrader is this hub's own, because its CheckOrigin closes over cfg.
+	upgrader websocket.Upgrader
+
 	clients    map[*Client]struct{}
 	broadcast  chan BroadcastMessage
 	register   chan *Client
@@ -38,8 +49,14 @@ type Hub struct {
 
 // NewHub creates and initializes a new Hub instance with all necessary channels
 // and client map. The returned Hub is ready to manage WebSocket connections.
-func NewHub() *Hub {
-	return &Hub{
+//
+// cfg is resolved once, here, and belongs to the hub from then on: the origin
+// check, the message size limit, and the rate limit every connection of this hub
+// runs under all come from it. A nil cfg means the defaults, which is what a
+// caller that does not care about any of them passes.
+func NewHub(cfg *Config) *Hub {
+	h := &Hub{
+		cfg:        resolveConfig(cfg),
 		clients:    make(map[*Client]struct{}),
 		broadcast:  make(chan BroadcastMessage),
 		register:   make(chan *Client),
@@ -48,6 +65,9 @@ func NewHub() *Hub {
 		shutdown:   make(chan struct{}),
 		done:       make(chan struct{}),
 	}
+
+	h.upgrader = newUpgrader(&h.cfg)
+	return h
 }
 
 // RegisterChan returns the channel used for registering new clients to the hub.

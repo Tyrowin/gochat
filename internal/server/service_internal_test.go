@@ -11,7 +11,7 @@ import (
 // applies. They are not reachable from outside the package, so this is where
 // the timeouts and the header limit are asserted.
 func TestNewConfiguresHTTPServer(t *testing.T) {
-	t.Cleanup(func() { SetConfig(nil) })
+	t.Parallel()
 
 	cfg := NewConfig()
 	cfg.Port = ":18090"
@@ -53,7 +53,7 @@ func TestNewConfiguresHTTPServer(t *testing.T) {
 // the health route, so the service is wired to the real mux rather than an empty
 // one.
 func TestNewServesTheApplicationRoutes(t *testing.T) {
-	t.Cleanup(func() { SetConfig(nil) })
+	t.Parallel()
 
 	svc := New(NewConfig())
 
@@ -72,7 +72,7 @@ func TestNewServesTheApplicationRoutes(t *testing.T) {
 // a moment still completes under the timeouts New applies, so the production
 // write timeout is not cutting responses off early.
 func TestProductionTimeoutsAllowSlowResponses(t *testing.T) {
-	t.Cleanup(func() { SetConfig(nil) })
+	t.Parallel()
 
 	// A handler slower than any synchronization delay in this suite. The sleep
 	// is the behavior under test, not a wait for something else to happen.

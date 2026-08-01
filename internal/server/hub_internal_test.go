@@ -29,7 +29,7 @@ func newOriginRequest(tb testing.TB, origin string) *http.Request {
 func newBenchHub(tb testing.TB, n int) (*Hub, []*Client) {
 	tb.Helper()
 
-	h := NewHub()
+	h := NewHub(nil)
 	clients := make([]*Client, n)
 
 	for i := range clients {
@@ -114,14 +114,13 @@ func BenchmarkRateLimiterAllow(b *testing.B) {
 }
 
 func BenchmarkOriginCheck(b *testing.B) {
-	SetConfig(&Config{AllowedOrigins: []string{"http://localhost:8080", "https://example.com"}})
-	b.Cleanup(func() { SetConfig(nil) })
+	cfg := resolveConfig(&Config{AllowedOrigins: []string{"http://localhost:8080", "https://example.com"}})
 
 	req := newOriginRequest(b, "https://example.com")
 
 	b.ReportAllocs()
 	for b.Loop() {
-		if !isOriginAllowed(req) {
+		if !cfg.isOriginAllowed(req) {
 			b.Fatal("expected origin to be allowed")
 		}
 	}

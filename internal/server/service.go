@@ -27,12 +27,11 @@ type Service struct {
 
 // New assembles the service described by cfg without starting anything.
 //
-// The configuration is also published globally, because the connection paths
-// (origin checks, message size limits, rate limiting) still read it from there.
+// cfg is handed to the hub, which resolves it and owns it from then on, so the
+// connection paths (origin checks, message size limits, rate limiting) read this
+// service's settings rather than the process's.
 func New(cfg *Config) *Service {
-	SetConfig(cfg)
-
-	hub := NewHub()
+	hub := NewHub(cfg)
 
 	return &Service{
 		hub: hub,

@@ -32,7 +32,7 @@ See [Deploying to production](../guides/deploying-to-production.md).
 cmd/server/main.go          Entry point: logger, config, signal handling, Service.Run
 internal/server/
   service.go                The service lifecycle: build, run, and drain in order
-  config.go                 Env parsing, defaults, sanitization, the atomic config snapshot
+  config.go                 Env parsing, defaults, sanitization, the resolved config a hub owns
   logging.go                Structured log/slog logger and LOG_LEVEL handling
   routes.go                 ServeMux wiring for /, /ws, /test
   handlers.go               Upgrade handler, health handler, embedded test page
@@ -59,8 +59,11 @@ drains them when `ctx` is cancelled. Nothing else is exported from the lifecycle
 ordering below cannot be got wrong by a caller — including a test, which is why the tests drive the
 real thing rather than a copy of it.
 
-**Hub** (`hub.go`) — owns the set of connected clients. A single goroutine runs `Hub.Run`, selecting
-over five channels: `register`, `unregister`, `broadcast`, `countReq`, and `shutdown`.
+**Hub** (`hub.go`) — owns the set of connected clients and the configuration they run under.
+`NewHub(cfg)` resolves the configuration once and keeps it, so the origin allow-list, the message
+size limit, and the rate limit belong to that hub rather than to the process. A single goroutine
+runs `Hub.Run`, selecting over five channels: `register`, `unregister`, `broadcast`, `countReq`,
+and `shutdown`.
 
 That goroutine is the *sole* owner of the client map: registration, unregistration, fan-out, and
 shutdown all happen inside `Run`, so the map needs no lock at all. Broadcasts iterate the map
@@ -90,16 +93,18 @@ goroutine and no allocation per client. It carries no mutex because only that co
 ever touches it; sharing a limiter across goroutines would be a bug.
 
 **Origin validation** (`origin.go`) — normalizes the `Origin` header to lowercase `scheme://host` and
-looks it up in a set built once at startup. Wired into the upgrader as `CheckOrigin`, so rejection
-happens before any connection resources are allocated. Headers that are already canonical — which is
-what browsers send — match the set directly and skip URL parsing entirely. A request with no `Origin`
-header is always rejected, even when the allow-list contains `*`.
+looks it up in a set built once when the hub is constructed. It is a method on that hub's resolved
+configuration, bound into the hub's own upgrader as `CheckOrigin`, so rejection happens before any
+connection resources are allocated. Headers that are already canonical — which is what browsers send
+— match the set directly and skip URL parsing entirely. A request with no `Origin` header is always
+rejected, even when the allow-list contains `*`.
 
-**Config** (`config.go`) — parsed from the environment at startup, sanitized, and published as an
-immutable snapshot in an `atomic.Pointer`. Readers on the connection path load the pointer without
-locking; `SetConfig` swaps in a whole new snapshot rather than mutating the live one. `SetConfig(nil)`
-restores defaults, which is what the tests use. Invalid values never abort startup; they log and fall
-back.
+**Config** (`config.go`) — parsed from the environment at startup into a `Config`, then resolved once
+by `NewHub`: defaults substituted for anything invalid, the allow-list normalized into a lookup set.
+The result is a value the hub owns and never mutates, so readers on the connection path need neither
+a lock nor an atomic load, and two hubs in one process can be configured differently. The caller's
+`Config` is copied on the way in, so changing it afterwards cannot change a running hub. Invalid
+values never abort startup; they log and fall back.
 
 **Logging** (`logging.go`) — a single `log/slog` logger shared by the package, its level read from
 `LOG_LEVEL`. Per-message records are emitted at debug level behind a `debugEnabled()` check, so at
@@ -148,8 +153,8 @@ its messages being queued indefinitely.
 `main` supplies the logger, the config, and a context cancelled on `SIGINT`/`SIGTERM`, then calls
 `Run`. It holds no lifecycle logic of its own, so the ordering below is reachable from a test.
 
-**Startup** (`New`, then `Run`): `New` applies the config globally, creates the hub, builds the mux,
-and constructs the `http.Server` with 15s read/write and 60s idle timeouts. `Run` starts the hub
+**Startup** (`New`, then `Run`): `New` hands the config to the hub, which resolves and keeps it,
+builds the mux, and constructs the `http.Server` with 15s read/write and 60s idle timeouts. `Run` starts the hub
 goroutine, calls `ListenAndServe` in a goroutine, and blocks on either a listener error or the
 context being done.
 
@@ -210,12 +215,12 @@ frame.
 
 ## Design trade-offs
 
-**Global config.** The hub now belongs to a `Service`, so a process can hold as many as it likes —
-which is what lets tests run a real server per test. The config snapshot is still a process-wide
-singleton: `New` publishes it with `SetConfig`, and the connection paths read it from there rather
-than from a `*Config` threaded through the hub and the clients. That is the remaining obstacle to two
-services with different settings in one process, and the natural next refactor if the server ever
-grows rooms or namespaces.
+**Nothing configurable is global.** The hub belongs to a `Service` and the configuration belongs to
+the hub, so a process can run as many services as it likes with different origin rules and different
+limits — which is what lets every test have a real server of its own and run alongside the others.
+What is still process-wide is deliberately not configurable per hub: the logger, and the
+`sync.Pool` of write buffers that keeps memory flat as connections accumulate. The cost is that a
+hub's settings are fixed once it is built; changing them means building another one.
 
 **No message history, no persistence.** Nothing is stored, so there is no database, no migration
 path, and no state to back up. A client that reconnects starts from silence.

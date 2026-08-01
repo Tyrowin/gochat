@@ -25,7 +25,9 @@ const (
 // TestGracefulShutdown verifies that the server shuts down gracefully
 // when the hub receives a shutdown signal
 func TestGracefulShutdown(t *testing.T) {
-	hub := startHub(t)
+	t.Parallel()
+
+	hub := startHub(t, nil)
 
 	if err := hub.Shutdown(shutdownContext(t, shutdownBudget)); err != nil {
 		t.Errorf("Hub shutdown failed: %v", err)
@@ -39,6 +41,8 @@ func TestGracefulShutdown(t *testing.T) {
 // TestGracefulShutdownWithClients verifies that cancelling the service's context
 // closes every active client connection and leaves the hub stopped.
 func TestGracefulShutdownWithClients(t *testing.T) {
+	t.Parallel()
+
 	svc := startService(t, ":18082")
 
 	numClients := 5
@@ -188,6 +192,8 @@ func verifyClientsDisconnected(t *testing.T, clients []*websocket.Conn, expected
 // TestShutdownWithActiveMessages verifies that messages in flight are delivered
 // before shutdown tears the service down.
 func TestShutdownWithActiveMessages(t *testing.T) {
+	t.Parallel()
+
 	svc := startService(t, ":18083")
 	clients := connectTestClients(t, svc.Hub(), 2, svc.wsURL())
 	sender, receiver := clients[0], clients[1]
@@ -212,7 +218,9 @@ func TestShutdownWithActiveMessages(t *testing.T) {
 // TestShutdownTimeout verifies that shutdown returns promptly rather than
 // blocking for its whole budget when there is nothing left to drain.
 func TestShutdownTimeout(t *testing.T) {
-	hub := startHub(t)
+	t.Parallel()
+
+	hub := startHub(t, nil)
 
 	// A budget this short is only met if Shutdown returns as soon as the event
 	// loop and the pumps are done, rather than waiting out a timer.
@@ -224,7 +232,9 @@ func TestShutdownTimeout(t *testing.T) {
 // TestConcurrentShutdown verifies that multiple shutdown calls are safe and all
 // report success.
 func TestConcurrentShutdown(t *testing.T) {
-	hub := startHub(t)
+	t.Parallel()
+
+	hub := startHub(t, nil)
 
 	const callers = 3
 	var wg sync.WaitGroup
@@ -250,6 +260,8 @@ func TestConcurrentShutdown(t *testing.T) {
 
 // TestNoClientsShutdown verifies shutdown works when no clients are connected
 func TestNoClientsShutdown(t *testing.T) {
+	t.Parallel()
+
 	svc := startService(t, ":18084")
 
 	if count := svc.Hub().ClientCount(); count != 0 {

@@ -52,7 +52,10 @@ func normalizeOrigin(origin string) (string, bool) {
 	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host), true
 }
 
-func isOriginAllowed(r *http.Request) bool {
+// isOriginAllowed reports whether r may open a WebSocket connection under this
+// configuration. The receiver is a pointer so the allow-list is not copied per
+// handshake.
+func (c *resolvedConfig) isOriginAllowed(r *http.Request) bool {
 	// A missing Origin header is rejected even when the allow-list contains "*",
 	// so non-browser clients cannot bypass the check by omitting it.
 	originHeader := r.Header.Get("Origin")
@@ -60,18 +63,16 @@ func isOriginAllowed(r *http.Request) bool {
 		return false
 	}
 
-	snap := currentSnapshot()
-
 	// "*" accepts anything that carried an Origin at all, including headers
 	// that do not parse as a URL, such as the literal "null" a sandboxed
 	// iframe or a file:// page sends.
-	if snap.allowAll {
+	if c.allowAll {
 		return true
 	}
 
 	// Fast path: browsers send the already-canonical form, so the common case
 	// matches the allow-list without parsing a URL.
-	if _, exists := snap.origins[originHeader]; exists {
+	if _, exists := c.origins[originHeader]; exists {
 		return true
 	}
 
@@ -80,12 +81,12 @@ func isOriginAllowed(r *http.Request) bool {
 		return false
 	}
 
-	_, exists := snap.origins[normalizedOrigin]
+	_, exists := c.origins[normalizedOrigin]
 	return exists
 }
 
-func checkOrigin(r *http.Request) bool {
-	if isOriginAllowed(r) {
+func (c *resolvedConfig) checkOrigin(r *http.Request) bool {
+	if c.isOriginAllowed(r) {
 		return true
 	}
 

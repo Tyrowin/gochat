@@ -21,6 +21,8 @@ const expectedHealthResponse = server.HealthResponse
 // It verifies that the handler responds correctly to different HTTP methods
 // and returns the expected status code and response body.
 func TestHealthHandlerUnit(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		method         string
@@ -69,6 +71,8 @@ func TestHealthHandlerUnit(t *testing.T) {
 // It verifies that the handler responds correctly to different HTTP methods
 // including GET, POST, PUT, DELETE, PATCH, HEAD, and OPTIONS.
 func TestHTTPMethodsUnit(t *testing.T) {
+	t.Parallel()
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := w.Write([]byte(expectedHealthResponse)); err != nil {
 			t.Errorf("Failed to write response: %v", err)
@@ -114,17 +118,20 @@ func testHTTPMethod(t *testing.T, handler http.HandlerFunc, method string) {
 }
 
 // newRoutes builds the application routes bound to a hub of this test's own, so
-// no test observes another's clients. The hub is drained when the test ends.
+// no test observes another's clients. The hub takes the default configuration,
+// which is all the routing tests need. It is drained when the test ends.
 func newRoutes(t *testing.T) *http.ServeMux {
 	t.Helper()
 
-	return server.SetupRoutesWithHub(startHub(t))
+	return server.SetupRoutesWithHub(startHub(t, nil))
 }
 
 // TestSetupRoutes tests the route setup function.
 // It verifies that SetupRoutesWithHub returns a properly configured ServeMux
 // with the expected routes and handlers properly registered.
 func TestSetupRoutes(t *testing.T) {
+	t.Parallel()
+
 	mux := newRoutes(t)
 
 	// Test that the mux is not nil
@@ -162,6 +169,8 @@ func TestSetupRoutes(t *testing.T) {
 // It verifies that NewConfig returns a properly initialized Config
 // struct with the expected default values.
 func TestNewConfig(t *testing.T) {
+	t.Parallel()
+
 	config := server.NewConfig()
 
 	if config == nil {

@@ -35,8 +35,11 @@ type Client struct {
 // NewClient creates a new Client instance with the provided WebSocket connection,
 // hub reference, and client address. The client's send channel is buffered
 // to handle message queuing.
+//
+// The size limit and the rate limit come from the hub the client is joining,
+// which resolved them when it was built.
 func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
-	cfg := currentSnapshot().cfg
+	cfg := &hub.cfg
 	conn.SetReadLimit(cfg.MaxMessageSize)
 
 	return &Client{
