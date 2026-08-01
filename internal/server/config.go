@@ -64,12 +64,17 @@ func defaultConfig() Config {
 func resolveConfig(cfg *Config) resolvedConfig {
 	resolved := defaultConfig()
 	if cfg != nil {
-		resolved = Config{
-			Port:           cfg.Port,
-			AllowedOrigins: slices.Clone(cfg.AllowedOrigins),
-			MaxMessageSize: cfg.MaxMessageSize,
-			RateLimit:      cfg.RateLimit,
-		}
+		// Whole-struct assignment, not a field-by-field literal: a field added to
+		// Config is carried across by default rather than silently dropped by a
+		// literal that forgot to list it.
+		//
+		// It is a shallow copy, so it only makes that promise for value-typed
+		// fields. A reference-typed field added to Config would arrive aliased to
+		// the caller's, which breaks the guarantee above and which neither the
+		// compiler nor TestResolveConfigPreservesEveryField can see. Give any such
+		// field its own copy here, as AllowedOrigins gets below.
+		resolved = *cfg
+		resolved.AllowedOrigins = slices.Clone(cfg.AllowedOrigins)
 	}
 
 	switch {
