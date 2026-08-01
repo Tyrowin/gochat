@@ -64,8 +64,9 @@ go test -v -race -run TestHubShutdown ./test/unit  # one test
 
 The integration suite takes roughly 1.5 seconds and the unit suite under a second, because both run
 their tests in parallel — each owns its hub, so there is no process state to serialize them. What is
-left is a handful of tests that wait on real timeouts, such as the rate-limiter refill. Always keep
-`-race` on — the hub and the client pumps are concurrent, and the suite now runs concurrently too.
+left is a handful of tests that wait on real timeouts, such as `TestWebSocketRateLimiting` waiting out
+a refill over a real socket. Always keep `-race` on — the hub and the client pumps are concurrent, and
+the suite now runs concurrently too.
 
 ## Coverage
 
@@ -135,7 +136,11 @@ Follow the conventions already in the suite:
   hub's `ClientCount()` is answered by its own event loop, so a reply proves every registration,
   unregistration, and broadcast queued before it has been processed — that is the barrier to wait on,
   via `testhelpers.WaitFor`. A `time.Sleep` is only acceptable when elapsed wall-clock time is the
-  behavior under test, such as waiting for the rate limiter to refill; say so in a comment.
+  behavior under test and there is no clock to drive by hand; say so in a comment. Prefer taking the
+  instant as a parameter so there is one, as `rateLimiter.allow(now)` does — the refill rules are
+  pinned by unit tests that advance a fixed instant, and the one surviving sleep, in
+  `TestWebSocketRateLimiting`, is there because reaching the limiter through a real socket goes
+  through `NewClient` and can only be given the real clock.
 
 ### Benchmarks
 

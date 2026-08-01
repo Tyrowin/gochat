@@ -446,6 +446,12 @@ func TestWebSocketMessageSizeLimit(t *testing.T) {
 	}
 }
 
+// TestWebSocketRateLimiting checks the limiter is wired into the read pump over
+// a real socket: the burst is the one the hub was configured with, an over-limit
+// frame is dropped rather than closing the connection, and tokens come back on
+// their own. It is deliberately no longer the specification of refill — the
+// arithmetic is pinned exactly, and without sleeping, by the limiter's unit
+// tests in internal/server, which drive its clock directly.
 func TestWebSocketRateLimiting(t *testing.T) {
 	t.Parallel()
 
@@ -525,12 +531,17 @@ func reconnectReceiver(t *testing.T, hub *server.Hub, wsURL, serverURL string, o
 	return dial(t, hub, wsURL, serverURL)
 }
 
-// testMessageAfterRefill verifies that messages can be sent after the rate limit refills
+// testMessageAfterRefill verifies that messages get through again once the
+// bucket has refilled. Since rateLimiter.allow takes the current instant from
+// its caller, this is the one check that the read pump hands it a real clock
+// that advances rather than a frozen or stale one — a unit test driving the
+// limiter directly cannot see that, which is why the sleep stays.
 func testMessageAfterRefill(t *testing.T, sender, receiver *websocket.Conn, refillInterval time.Duration) {
 	t.Helper()
 
-	// Not a synchronization sleep: the token bucket refills on wall-clock time,
-	// so the only way to observe a refill is to let that time pass.
+	// Not a synchronization sleep: reaching the limiter through a real socket
+	// means going through NewClient, so real wall-clock time is the only clock
+	// this test can advance.
 	time.Sleep(refillInterval + 100*time.Millisecond)
 
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "after-refill")); err != nil {

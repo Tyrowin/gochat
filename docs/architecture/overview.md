@@ -113,6 +113,15 @@ value. Tokens refill continuously from elapsed time rather than on a timer, so t
 goroutine and no allocation per client. It carries no mutex because only that connection's read pump
 ever touches it; sharing a limiter across goroutines would be a bug.
 
+The bucket does not read the clock: both the constructor and `allow(now)` take the current instant
+from the caller, and the read pump supplies `time.Now()` at the single production call site. That is
+what makes refill observable — the unit tests advance a fixed instant by hand and pin partial refill,
+the cap at capacity, a clock that does not move, and one that goes backwards, none of which can be
+seen from a test that has to spend the real time first. The clock is a parameter rather than a
+`func() time.Time` field on the struct deliberately: a limiter sits by value inside every `Client` and
+`allow` runs once per message, so a function-valued field would add an indirect call to the hot path
+and a word to every connection. Passing the instant costs neither.
+
 **Origin validation** (`origin.go`) — normalizes the `Origin` header to lowercase `scheme://host` and
 looks it up in a set built once when the hub is constructed. It is a method on that hub's resolved
 configuration, bound into the hub's own upgrader as `CheckOrigin`, so rejection happens before any
