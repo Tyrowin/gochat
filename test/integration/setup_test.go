@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -45,34 +46,118 @@ func shutdownContext(t *testing.T, budget time.Duration) context.Context {
 	return ctx
 }
 
-// startHub runs a hub's event loop and returns once it is provably serving
-// requests, so no caller needs to sleep before using it.
-func startHub(t *testing.T) *server.Hub {
+// startHub runs a hub's event loop under cfg and returns once it is provably
+// serving requests, so no caller needs to sleep before using it. A nil cfg gives
+// the hub the defaults.
+func startHub(t *testing.T, cfg *server.Config) *server.Hub {
 	t.Helper()
 
-	hub := server.NewHub()
+	hub := server.NewHub(cfg)
 	hub.Start()
 
-	// ClientCount is answered by the Run goroutine, so a reply proves the loop
+	// ClientCount is answered by the hub's run loop, so a reply proves the loop
 	// is up.
 	hub.ClientCount()
 
 	return hub
 }
 
-// newTestServer starts an HTTP server backed by a hub of its own, so the client
-// counts a test observes belong to that test alone rather than to whatever the
-// process-wide hub happens to hold. Both are torn down when the test ends.
+// testService is a real [server.Service] running on a real port, driven exactly
+// the way main drives it: New, then Run under a context the test cancels.
+type testService struct {
+	*server.Service
+
+	port string
+	stop context.CancelFunc
+	done chan error
+
+	once   sync.Once
+	runErr error
+}
+
+// startService runs a service on port and returns once it is accepting
+// requests. It is stopped when the test ends if the test did not stop it itself.
+func startService(t *testing.T, port string) *testService {
+	t.Helper()
+
+	cfg := server.NewConfig()
+	cfg.Port = port
+	cfg.AllowedOrigins = []string{testOriginURL, "http://localhost" + port}
+	// Rate limiting is exercised in security_test.go; here it would only throttle
+	// the messages a lifecycle test needs in flight.
+	cfg.RateLimit = server.RateLimitConfig{Burst: 1000, RefillInterval: time.Second}
+
+	svc := server.New(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	svcTest := &testService{Service: svc, port: port, stop: cancel, done: make(chan error, 1)}
+
+	go func() { svcTest.done <- svc.Run(ctx) }()
+	t.Cleanup(func() { _ = svcTest.shutdown(t) })
+
+	testhelpers.WaitForServer(t, svcTest.baseURL()+"/", shutdownBudget)
+	return svcTest
+}
+
+func (s *testService) baseURL() string { return "http://localhost" + s.port }
+
+func (s *testService) wsURL() string { return "ws://localhost" + s.port + "/ws" }
+
+// shutdown cancels the service's context and returns what Run returned. Calling
+// it more than once — which the test cleanup does — replays the first result.
+func (s *testService) shutdown(t *testing.T) error {
+	t.Helper()
+
+	s.once.Do(func() {
+		s.stop()
+		select {
+		case s.runErr = <-s.done:
+		case <-time.After(shutdownBudget):
+			t.Error("Run did not return within the shutdown budget")
+		}
+	})
+
+	return s.runErr
+}
+
+// newTestServer starts an HTTP server backed by a hub of its own, taking the
+// default configuration plus its own origin. Use [newConfiguredTestServer] when
+// the test varies a setting, and [startService] when the lifecycle itself is
+// under test.
 func newTestServer(t *testing.T) (*httptest.Server, *server.Hub) {
 	t.Helper()
 
-	hub := startHub(t)
-	httpServer := testhelpers.CreateTestServer(t, server.SetupRoutesWithHub(hub))
+	return newConfiguredTestServer(t, nil)
+}
 
-	t.Cleanup(func() {
-		if err := hub.Shutdown(shutdownContext(t, shutdownBudget)); err != nil {
-			t.Errorf("Failed to shut down the test hub: %v", err)
+// newConfiguredTestServer starts an HTTP server backed by a hub of its own,
+// configured by customize, so both the client counts and the settings a test
+// observes belong to that test alone. Both are torn down when the test ends.
+//
+// The hub owns its configuration, so that configuration has to exist before the
+// hub does: the listener is opened first and its URL is already on the
+// allow-list when customize runs. A customize that replaces AllowedOrigins
+// outright is testing the allow-list itself, and overrides that.
+func newConfiguredTestServer(t *testing.T, customize func(cfg *server.Config)) (*httptest.Server, *server.Hub) {
+	t.Helper()
+
+	var hub *server.Hub
+
+	httpServer := testhelpers.CreateTestServer(t, func(baseURL string) http.Handler {
+		cfg := server.NewConfig()
+		cfg.AllowedOrigins = append([]string{baseURL}, cfg.AllowedOrigins...)
+		if customize != nil {
+			customize(cfg)
 		}
+
+		hub = startHub(t, cfg)
+		t.Cleanup(func() {
+			if err := hub.Shutdown(shutdownContext(t, shutdownBudget)); err != nil {
+				t.Errorf("Failed to shut down the test hub: %v", err)
+			}
+		})
+
+		return server.SetupRoutesWithHub(hub)
 	})
 
 	return httpServer, hub
@@ -165,20 +250,6 @@ func expectNoMessage(t *testing.T, conn *websocket.Conn, timeout time.Duration) 
 		return
 	}
 	t.Fatalf("Unexpected error while waiting for absence of message: %v", err)
-}
-
-func configureServerForTest(t *testing.T, baseURL string, customize func(cfg *server.Config)) {
-	t.Helper()
-
-	cfg := server.NewConfig()
-	cfg.AllowedOrigins = append([]string{baseURL}, cfg.AllowedOrigins...)
-	if customize != nil {
-		customize(cfg)
-	}
-	server.SetConfig(cfg)
-	t.Cleanup(func() {
-		server.SetConfig(nil)
-	})
 }
 
 func newOriginHeader(origin string) http.Header {

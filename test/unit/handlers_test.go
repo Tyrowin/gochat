@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/maltemindedal/blip/internal/server"
 )
@@ -22,6 +21,8 @@ const expectedHealthResponse = server.HealthResponse
 // It verifies that the handler responds correctly to different HTTP methods
 // and returns the expected status code and response body.
 func TestHealthHandlerUnit(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		method         string
@@ -70,6 +71,8 @@ func TestHealthHandlerUnit(t *testing.T) {
 // It verifies that the handler responds correctly to different HTTP methods
 // including GET, POST, PUT, DELETE, PATCH, HEAD, and OPTIONS.
 func TestHTTPMethodsUnit(t *testing.T) {
+	t.Parallel()
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if _, err := w.Write([]byte(expectedHealthResponse)); err != nil {
 			t.Errorf("Failed to write response: %v", err)
@@ -114,15 +117,26 @@ func testHTTPMethod(t *testing.T, handler http.HandlerFunc, method string) {
 	}
 }
 
+// newRoutes builds the application routes bound to a hub of this test's own, so
+// no test observes another's clients. The hub takes the default configuration,
+// which is all the routing tests need. It is drained when the test ends.
+func newRoutes(t *testing.T) *http.ServeMux {
+	t.Helper()
+
+	return server.SetupRoutesWithHub(startHub(t, nil))
+}
+
 // TestSetupRoutes tests the route setup function.
-// It verifies that SetupRoutes returns a properly configured ServeMux
+// It verifies that SetupRoutesWithHub returns a properly configured ServeMux
 // with the expected routes and handlers properly registered.
 func TestSetupRoutes(t *testing.T) {
-	mux := server.SetupRoutes()
+	t.Parallel()
+
+	mux := newRoutes(t)
 
 	// Test that the mux is not nil
 	if mux == nil {
-		t.Fatal("SetupRoutes returned nil mux")
+		t.Fatal("SetupRoutesWithHub returned nil mux")
 	}
 
 	// Test that the root route is properly configured
@@ -146,46 +160,17 @@ func TestSetupRoutes(t *testing.T) {
 	}
 }
 
-// TestCreateServer tests the server creation function.
-// It verifies that CreateServer returns an HTTP server with the correct
-// configuration including address, handler, and timeout settings.
-func TestCreateServer(t *testing.T) {
-	port := ":8080"
-	mux := server.SetupRoutes()
-
-	srv := server.CreateServer(port, mux)
-
-	// Test server configuration
-	if srv.Addr != port {
-		t.Errorf("Expected server addr %s, got %s", port, srv.Addr)
-	}
-
-	if srv.Handler != mux {
-		t.Error("Server handler not set correctly")
-	}
-
-	// Test timeout settings
-	expectedReadTimeout := 15 * time.Second
-	expectedWriteTimeout := 15 * time.Second
-	expectedIdleTimeout := 60 * time.Second
-
-	if srv.ReadTimeout != expectedReadTimeout {
-		t.Errorf("Expected ReadTimeout %v, got %v", expectedReadTimeout, srv.ReadTimeout)
-	}
-
-	if srv.WriteTimeout != expectedWriteTimeout {
-		t.Errorf("Expected WriteTimeout %v, got %v", expectedWriteTimeout, srv.WriteTimeout)
-	}
-
-	if srv.IdleTimeout != expectedIdleTimeout {
-		t.Errorf("Expected IdleTimeout %v, got %v", expectedIdleTimeout, srv.IdleTimeout)
-	}
-}
+// The address, timeouts, and header limit the service applies to its HTTP
+// server are pinned in internal/server/service_internal_test.go: they belong to
+// the *http.Server that [server.Service] owns, which is deliberately not
+// reachable from outside the package.
 
 // TestNewConfig tests the configuration creation function.
 // It verifies that NewConfig returns a properly initialized Config
 // struct with the expected default values.
 func TestNewConfig(t *testing.T) {
+	t.Parallel()
+
 	config := server.NewConfig()
 
 	if config == nil {

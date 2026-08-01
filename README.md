@@ -90,8 +90,8 @@ Full index: [docs/README.md](docs/README.md).
 ## Project structure
 
 ```
-cmd/server/         Entry point: startup, signal handling, graceful shutdown
-internal/server/    Hub, client pumps, handlers, config, origin checks, rate limiter
+cmd/server/         Entry point: logger, config, signal handling
+internal/server/    Service lifecycle, hub, client pumps, handlers, config, origin checks, rate limiter
 test/               Unit and integration suites plus shared helpers
 docs/               Documentation (see docs/README.md)
 .github/workflows/  CI pipeline

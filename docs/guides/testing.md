@@ -4,29 +4,46 @@ How the suite is organized and how to run, extend, and measure it.
 
 ## Layout
 
-All tests live under `test/`, outside the packages they exercise, so they see `internal/server`
-through its exported API only.
+Almost all tests live under `test/`, outside the packages they exercise, so they see
+`internal/server` through its exported API only.
 
 ```
 test/
 ├── unit/                    # package unit — components in isolation
 │   ├── error_handling_test.go   # read/write error paths, registration accounting
-│   ├── handlers_test.go         # health handler, routing, server construction
-│   ├── hub_test.go              # hub channels, client count, shutdown lifecycle
+│   ├── handlers_test.go         # health handler, routing
+│   ├── hub_test.go              # publish, client count, shutdown lifecycle
 │   └── websocket_test.go        # upgrader config, method and header validation
 ├── integration/             # package integration — real servers over real sockets
 │   ├── setup_test.go            # shared plumbing: test servers, dialing, assertions
 │   ├── multiclient_test.go      # many clients exchanging messages concurrently
 │   ├── security_test.go         # origin validation, size limits, rate limiting
-│   ├── server_test.go           # health endpoint, timeouts, full startup path
-│   ├── shutdown_test.go         # graceful shutdown with and without clients
+│   ├── server_test.go           # health endpoint, full startup path
+│   ├── shutdown_test.go         # graceful shutdown, ordering, clients closed
 │   └── websocket_test.go        # connection lifecycle, broadcasting
 └── testhelpers/             # shared helpers (no tests of its own)
     └── helpers.go
 ```
 
 Integration tests spin up `httptest` servers and dial them with a real `gorilla/websocket` client,
-so they exercise the actual handshake, origin check, and pumps.
+so they exercise the actual handshake, origin check, and pumps. The lifecycle tests go further and
+run the real `server.Service` on a real port, driven the way `main` drives it.
+
+The exception is `internal/server/*_internal_test.go`, which covers what the exported API cannot
+reach: the hot paths the benchmarks measure, the `*http.Server` that `New` builds — its address,
+its timeouts, and its header limit are the service's own, not a caller's — and anything that needs a
+client. `Hub.Register` and `Hub.Unregister` take `clientConn`, the hub's own view of a client, which
+only this package can name. `Hub.Publish` loses the same shutdown race and is tested from
+`test/unit`, where it belongs, because it needs no client at all.
+
+That view is also what makes the hub's delivery rules testable at all. `hub_internal_test.go` defines
+a `fakeClient` — an inbox and an address, no socket underneath — and registers it through the real
+`Hub.Register`, so the fan-out, sender exclusion, the backpressure drop, and no-op unregistration are
+pinned against the running event loop rather than a copy of it. The backpressure test gives its
+victim a one-slot inbox and publishes twice; over a real connection, filling 256 slots faster than a
+consumer drains them is not something a test can arrange. Assertions read an inbox with a
+non-blocking drain that also reports whether the hub closed it, so a regression fails the test
+instead of hanging on a channel nobody will feed.
 
 ## Running
 
@@ -45,10 +62,11 @@ go test -v -race ./test/unit/...                # one package
 go test -v -race -run TestHubShutdown ./test/unit  # one test
 ```
 
-The integration suite takes roughly 7.5 seconds — what remains is a handful of tests that wait on
-real timeouts, such as the rate-limiter refill; the unit suite finishes in about 2 seconds. Always
-keep `-race` on — the hub, the client pumps, and the
-config store are all concurrent.
+The integration suite takes roughly 1.5 seconds and the unit suite under a second, because both run
+their tests in parallel — each owns its hub, so there is no process state to serialize them. What is
+left is a handful of tests that wait on real timeouts, such as `TestWebSocketRateLimiting` waiting out
+a refill over a real socket. Always keep `-race` on — the hub and the client pumps are concurrent, and
+the suite now runs concurrently too.
 
 ## Coverage
 
@@ -75,7 +93,7 @@ coverage.
 
 | Helper                                            | Purpose                                                             |
 | ------------------------------------------------- | ------------------------------------------------------------------- |
-| `CreateTestServer(t, handler)`                    | `httptest` server for a handler, closed when the test ends           |
+| `CreateTestServer(t, build)`                      | `httptest` server whose handler is built from its own base URL, closed when the test ends |
 | `CreateTestServerWithTimeouts(t, handler, ServerTimeouts)` | Same, with explicit read/write/idle HTTP timeouts           |
 | `WaitFor(t, timeout, what, cond)`                 | Poll a condition to a deadline — use instead of `time.Sleep`         |
 | `WaitForServer(t, url, timeout)`                  | Block until a just-started server accepts requests                   |
@@ -87,10 +105,16 @@ coverage.
 | `MakeRequest(t, method, url)`                     | HTTP request, fully read; returns a `Response` with the body closed  |
 | `AssertStatusCode` / `AssertContentType` / `AssertBody` | Common assertions over a `Response`                            |
 
+`CreateTestServer` takes a builder rather than a handler because the hub owns its configuration and
+usually has to allow the server's own origin — which means the config, and therefore the hub, has to
+exist before the handler does. The listener is opened first and its URL passed to `build`.
+
 The `integration` package layers its own helpers on top in `setup_test.go` — `newTestServer` (a
-server backed by a hub of its own), `dial` / `dialPair` / `dialClients` (which return only once the
-hub has registered every connection), and `waitForUnregister`. Prefer those inside that package:
-they make client-count assertions exact.
+server backed by a hub of its own, on the default settings), `newConfiguredTestServer` (the same,
+with a callback that varies the config first), `startService` (the real `server.Service`, running on
+a real port, stopped by cancelling its context), `dial` / `dialPair` / `dialClients` (which return
+only once the hub has registered every connection), and `waitForUnregister`. Prefer those inside that
+package: they make client-count assertions exact.
 
 ## Writing tests
 
@@ -101,21 +125,34 @@ Follow the conventions already in the suite:
 - Use table-driven subtests with `t.Run` for multiple scenarios of one behavior.
 - Cover the failure path, not just the happy one — most bugs in this codebase live in error handling
   and shutdown ordering.
-- Reset shared state. The active config is a package-level global and `server.GlobalHub()` is
-  process-wide; give a test its own hub with `server.SetupRoutesWithHub` (integration tests get this
-  from `newTestServer`) and restore the config with `server.SetConfig(nil)` rather than mutating
-  global state and leaving it changed.
+- Own your state, then run in parallel. Nothing configurable is process-wide: give a test its own hub
+  with `server.NewHub(cfg)` and `server.SetupRoutesWithHub`, or a whole service of its own with the
+  integration package's `startService`, so both the client counts and the settings it observes belong
+  to it alone. A test that does that should call `t.Parallel()`. The one thing still shared by the
+  process is the logger, so `TestShutdownStopsAcceptingBeforeDrainingClients` — which reads the
+  shutdown ordering off `server.SetLogger` — stays serial. Fixed listen ports are fine in parallel as
+  long as no two tests pick the same one.
 - Prefer waiting on a channel or polling with a deadline over `time.Sleep` for synchronization. The
   hub's `ClientCount()` is answered by its own event loop, so a reply proves every registration,
   unregistration, and broadcast queued before it has been processed — that is the barrier to wait on,
   via `testhelpers.WaitFor`. A `time.Sleep` is only acceptable when elapsed wall-clock time is the
-  behavior under test, such as waiting for the rate limiter to refill; say so in a comment.
+  behavior under test and there is no clock to drive by hand; say so in a comment. Prefer taking the
+  instant as a parameter so there is one, as `rateLimiter.allow(now)` does — the refill rules are
+  pinned by unit tests that advance a fixed instant, and the one surviving sleep, in
+  `TestWebSocketRateLimiting`, is there because reaching the limiter through a real socket goes
+  through `NewClient` and can only be given the real clock.
 
 ### Benchmarks
 
 `make bench` runs `go test -bench=. -benchmem ./...`. The benchmarks live alongside the code they
 measure, in `internal/server/*_internal_test.go`, because they exercise unexported hot paths:
 broadcast fan-out, message normalization, the rate limiter, and origin checks.
+
+`BenchmarkHubBroadcast` builds its client set with `newBenchHub`, which installs fakes through the
+hub's own registration path rather than writing the client map behind its back, so the fan-out it
+times runs over a map the hub assembled itself. It deliberately leaves the event loop unstarted and
+calls the fan-out directly: that keeps the client map owned by the one goroutine touching it and
+keeps channel handoff and pump scheduling out of the number.
 
 They assert allocation counts implicitly rather than wall-clock time — the numbers move with the
 machine, but a path that was allocation-free and stops being so is a regression worth catching. Run

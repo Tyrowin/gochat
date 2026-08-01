@@ -35,8 +35,11 @@ type Client struct {
 // NewClient creates a new Client instance with the provided WebSocket connection,
 // hub reference, and client address. The client's send channel is buffered
 // to handle message queuing.
+//
+// The size limit and the rate limit come from the hub the client is joining,
+// which resolved them when it was built.
 func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
-	cfg := currentSnapshot().cfg
+	cfg := &hub.cfg
 	conn.SetReadLimit(cfg.MaxMessageSize)
 
 	return &Client{
@@ -45,15 +48,33 @@ func NewClient(conn *websocket.Conn, hub *Hub, addr string) *Client {
 		hub:            hub,
 		addr:           addr,
 		maxMessageSize: cfg.MaxMessageSize,
-		rateLimiter:    newRateLimiter(cfg.RateLimit.Burst, cfg.RateLimit.RefillInterval),
+		rateLimiter:    newRateLimiter(cfg.RateLimit.Burst, cfg.RateLimit.RefillInterval, time.Now()),
 		rateLimit:      cfg.RateLimit,
 	}
 }
 
-// SendChan returns the client's send channel for reading outgoing messages.
-// This channel is read-only from the caller's perspective.
-func (c *Client) SendChan() <-chan []byte {
-	return c.send
+// inbox is the channel the hub delivers into, and closes when it drops this
+// client. It satisfies [clientConn].
+func (c *Client) inbox() chan<- []byte { return c.send }
+
+// remoteAddr is the address the hub names this client by in its log records.
+// It satisfies [clientConn].
+func (c *Client) remoteAddr() string { return c.addr }
+
+// serve runs the connection's two pumps and returns once both have exited. It
+// satisfies [clientConn], so the hub launches one goroutine per client and
+// stays out of how many the connection actually needs — gorilla/websocket
+// permits one concurrent reader and one concurrent writer, which is why there
+// are two.
+func (c *Client) serve() {
+	writeDone := make(chan struct{})
+	go func() {
+		defer close(writeDone)
+		c.writePump()
+	}()
+
+	c.readPump()
+	<-writeDone
 }
 
 // setupReadConnection configures read deadlines and the pong handler for the
@@ -94,9 +115,11 @@ func (c *Client) handleReadError(err error) bool {
 	return true
 }
 
-// checkRateLimit reports whether the client is within its message budget.
+// checkRateLimit reports whether the client is within its message budget. The
+// read pump is the only reader of the clock on this path; the limiter itself
+// takes the instant as an argument so tests can drive it directly.
 func (c *Client) checkRateLimit() bool {
-	if c.rateLimiter.allow() {
+	if c.rateLimiter.allow(time.Now()) {
 		return true
 	}
 
@@ -119,22 +142,17 @@ func (c *Client) processMessage(rawMessage []byte) bool {
 		log().Debug("received message", "addr", c.addr, "payload", string(payload))
 	}
 
-	select {
-	case c.hub.broadcast <- BroadcastMessage{Sender: c, Payload: payload}:
-		return true
-	case <-c.hub.shutdown:
+	if !c.hub.Publish(BroadcastMessage{Sender: c, Payload: payload}) {
 		log().Debug("skipping broadcast; hub is shutting down", "addr", c.addr)
 		return false
 	}
+
+	return true
 }
 
 // cleanupReadPump handles cleanup tasks when readPump exits.
 func (c *Client) cleanupReadPump() {
-	select {
-	case c.hub.unregister <- c:
-	case <-c.hub.shutdown:
-	}
-
+	c.hub.Unregister(c)
 	c.closeConnection()
 }
 

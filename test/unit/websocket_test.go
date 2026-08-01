@@ -18,10 +18,23 @@ const (
 	errMethodNotAllowed = "Method not allowed. WebSocket endpoint only accepts GET requests."
 )
 
+// serveWebSocket drives req through the application routes bound to a hub of
+// this test's own. The upgrade handler is unexported — the service owns it — so
+// the mux is how these tests reach it.
+func serveWebSocket(t *testing.T, req *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
+
+	w := httptest.NewRecorder()
+	newRoutes(t).ServeHTTP(w, req)
+	return w
+}
+
 // TestWebSocketHandlerMethodValidation tests the WebSocket handler's HTTP method validation.
 // It verifies that the handler correctly rejects non-GET requests with the appropriate
 // status code and error message, as WebSocket upgrades require GET requests.
 func TestWebSocketHandlerMethodValidation(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name           string
 		method         string
@@ -56,10 +69,7 @@ func TestWebSocketHandlerMethodValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/ws", nil)
-			w := httptest.NewRecorder()
-
-			server.WebSocketHandler(w, req)
+			w := serveWebSocket(t, httptest.NewRequest(tt.method, "/ws", nil))
 
 			resp := w.Result()
 			defer func() { _ = resp.Body.Close() }()
@@ -80,10 +90,9 @@ func TestWebSocketHandlerMethodValidation(t *testing.T) {
 // that don't include proper WebSocket upgrade headers. It verifies that such requests
 // are rejected with a Bad Request status code.
 func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-	w := httptest.NewRecorder()
+	t.Parallel()
 
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, httptest.NewRequest(http.MethodGet, "/ws", nil))
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -97,10 +106,9 @@ func TestWebSocketHandlerGETWithoutUpgrade(t *testing.T) {
 // Content-Type header when rejecting invalid requests. It verifies that error responses
 // include the appropriate content type for the error message.
 func TestWebSocketHandlerContentType(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/ws", nil)
-	w := httptest.NewRecorder()
+	t.Parallel()
 
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, httptest.NewRequest(http.MethodPost, "/ws", nil))
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -115,6 +123,8 @@ func TestWebSocketHandlerContentType(t *testing.T) {
 // It verifies that requests with proper WebSocket headers are handled appropriately,
 // either succeeding with a protocol switch or failing with an appropriate error.
 func TestWebSocketUpgraderConfiguration(t *testing.T) {
+	t.Parallel()
+
 	// Create a GET request with proper WebSocket headers
 	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
 	req.Header.Set("Connection", "Upgrade")
@@ -122,9 +132,7 @@ func TestWebSocketUpgraderConfiguration(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Version", "13")
 	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
 
-	w := httptest.NewRecorder()
-
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, req)
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -138,6 +146,8 @@ func TestWebSocketUpgraderConfiguration(t *testing.T) {
 // It verifies that requests with proper WebSocket upgrade headers are not rejected
 // with a Method Not Allowed status, ensuring the handler recognizes valid WebSocket requests.
 func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
+	t.Parallel()
+
 	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
 
 	req.Header.Set("Connection", "upgrade")
@@ -146,9 +156,7 @@ func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
 	req.Header.Set("Sec-WebSocket-Key", "x3JJHMbDL1EzLkh9GBhXDw==")
 	req.Header.Set("Origin", "http://localhost:8080")
 
-	w := httptest.NewRecorder()
-
-	server.WebSocketHandler(w, req)
+	w := serveWebSocket(t, req)
 
 	resp := w.Result()
 	defer func() { _ = resp.Body.Close() }()
@@ -158,15 +166,94 @@ func TestWebSocketHandlerWithValidHeaders(t *testing.T) {
 	}
 }
 
-// TestStartHub tests that the StartHub function executes without panicking.
-// It verifies that the hub can be started successfully and runs in the background
-// without encountering runtime errors during initialization.
-func TestStartHub(t *testing.T) {
+// routesAllowing builds the application routes bound to a hub of this test's
+// own that allows exactly one origin.
+func routesAllowing(t *testing.T, origin string) *http.ServeMux {
+	t.Helper()
+
+	cfg := server.NewConfig()
+	cfg.AllowedOrigins = []string{origin}
+
+	return server.SetupRoutesWithHub(startHub(t, cfg))
+}
+
+// upgradeStatus drives a WebSocket handshake from origin through routes and
+// reports the status. A recorder cannot be hijacked, so an accepted handshake
+// still fails — later than the origin check does, and with a different status.
+func upgradeStatus(t *testing.T, routes *http.ServeMux, origin string) int {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	req.Header.Set("Connection", "upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "x3JJHMbDL1EzLkh9GBhXDw==")
+	req.Header.Set("Origin", origin)
+
+	w := httptest.NewRecorder()
+	routes.ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer func() { _ = resp.Body.Close() }()
+
+	return resp.StatusCode
+}
+
+// TestHubsCarryTheirOwnOriginPolicy pins what the configuration seam is for: the
+// allow-list belongs to the hub, so two hubs in one process can disagree about
+// the same origin. Each hub must accept its own and reject the other's.
+func TestHubsCarryTheirOwnOriginPolicy(t *testing.T) {
+	t.Parallel()
+
+	const (
+		originA = "http://a.test"
+		originB = "http://b.test"
+	)
+
+	routesA := routesAllowing(t, originA)
+	routesB := routesAllowing(t, originB)
+
+	cases := []struct {
+		name    string
+		routes  *http.ServeMux
+		origin  string
+		blocked bool
+	}{
+		{"hub A allows its own origin", routesA, originA, false},
+		{"hub A blocks hub B's origin", routesA, originB, true},
+		{"hub B allows its own origin", routesB, originB, false},
+		{"hub B blocks hub A's origin", routesB, originA, true},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			status := upgradeStatus(t, tt.routes, tt.origin)
+
+			if blocked := status == http.StatusForbidden; blocked != tt.blocked {
+				t.Errorf("Expected blocked=%v for origin %s, got status %d",
+					tt.blocked, tt.origin, status)
+			}
+		})
+	}
+}
+
+// TestNewServiceBuildsAServerWithAHub replaces the old StartHub smoke test: the
+// startup path is now server.New, which must assemble a service around a hub
+// without panicking. Running it is covered in test/integration.
+func TestNewServiceBuildsAServerWithAHub(t *testing.T) {
+	t.Parallel()
+
 	defer func() {
 		if r := recover(); r != nil {
-			t.Errorf("StartHub panicked: %v", r)
+			t.Errorf("server.New panicked: %v", r)
 		}
 	}()
 
-	server.StartHub()
+	svc := server.New(server.NewConfig())
+
+	if svc.Hub() == nil {
+		t.Fatal("server.New returned a service without a hub")
+	}
 }

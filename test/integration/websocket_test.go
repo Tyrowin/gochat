@@ -21,8 +21,9 @@ import (
 // It verifies that WebSocket connections can be established, messages can be sent and received,
 // and the complete WebSocket functionality works in a real server environment.
 func TestWebSocketEndpointIntegration(t *testing.T) {
+	t.Parallel()
+
 	testServer, _ := newTestServer(t)
-	configureServerForTest(t, testServer.URL, nil)
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
 
@@ -100,8 +101,9 @@ func testGETWithoutWebSocketHeaders(t *testing.T, serverURL string) {
 // It verifies that messages sent by one client are properly broadcasted to all other
 // connected clients through the hub system.
 func TestWebSocketMessageBroadcasting(t *testing.T) {
+	t.Parallel()
+
 	testServer, hub := newTestServer(t)
-	configureServerForTest(t, testServer.URL, nil)
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
 	connections := dialClients(t, hub, wsURL, testServer.URL, 3)
@@ -215,8 +217,9 @@ func closeAllConnections(t *testing.T, connections []*websocket.Conn) {
 // It verifies that connections can be established, used for communication, and properly
 // closed, including testing multiple sequential connections.
 func TestWebSocketConnectionLifecycle(t *testing.T) {
+	t.Parallel()
+
 	testServer, hub := newTestServer(t)
-	configureServerForTest(t, testServer.URL, nil)
 	wsURL := buildWebSocketURL(t, testServer.URL)
 
 	t.Run("Connection and Disconnection", func(t *testing.T) {
@@ -258,8 +261,9 @@ func TestWebSocketConnectionLifecycle(t *testing.T) {
 // It verifies that multiple clients can connect simultaneously and exchange messages
 // without causing race conditions or system instability.
 func TestWebSocketConcurrentConnections(t *testing.T) {
+	t.Parallel()
+
 	testServer, _ := newTestServer(t)
-	configureServerForTest(t, testServer.URL, nil)
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
 
@@ -348,11 +352,12 @@ func waitForConcurrentClients(t *testing.T, numClients int, done chan error) {
 }
 
 func TestWebSocketOriginValidation(t *testing.T) {
-	testServer, _ := newTestServer(t)
+	t.Parallel()
 
-	allowedOrigin := "http://allowed.test"
-	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
-		cfg.AllowedOrigins = []string{testServer.URL, allowedOrigin}
+	const allowedOrigin = "http://allowed.test"
+
+	testServer, _ := newConfiguredTestServer(t, func(cfg *server.Config) {
+		cfg.AllowedOrigins = append(cfg.AllowedOrigins, allowedOrigin)
 	})
 
 	wsURL := buildWebSocketURL(t, testServer.URL)
@@ -411,10 +416,11 @@ func testDisallowedOrigin(t *testing.T, wsURL string) {
 }
 
 func TestWebSocketMessageSizeLimit(t *testing.T) {
-	testServer, hub := newTestServer(t)
+	t.Parallel()
 
 	const limit int64 = 64
-	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
+
+	testServer, hub := newConfiguredTestServer(t, func(cfg *server.Config) {
 		cfg.MaxMessageSize = limit
 	})
 
@@ -440,11 +446,18 @@ func TestWebSocketMessageSizeLimit(t *testing.T) {
 	}
 }
 
+// TestWebSocketRateLimiting checks the limiter is wired into the read pump over
+// a real socket: the burst is the one the hub was configured with, an over-limit
+// frame is dropped rather than closing the connection, and tokens come back on
+// their own. It is deliberately no longer the specification of refill — the
+// arithmetic is pinned exactly, and without sleeping, by the limiter's unit
+// tests in internal/server, which drive its clock directly.
 func TestWebSocketRateLimiting(t *testing.T) {
-	testServer, hub := newTestServer(t)
+	t.Parallel()
 
 	rateCfg := server.RateLimitConfig{Burst: 2, RefillInterval: 500 * time.Millisecond}
-	configureServerForTest(t, testServer.URL, func(cfg *server.Config) {
+
+	testServer, hub := newConfiguredTestServer(t, func(cfg *server.Config) {
 		cfg.RateLimit = rateCfg
 	})
 
@@ -518,12 +531,17 @@ func reconnectReceiver(t *testing.T, hub *server.Hub, wsURL, serverURL string, o
 	return dial(t, hub, wsURL, serverURL)
 }
 
-// testMessageAfterRefill verifies that messages can be sent after the rate limit refills
+// testMessageAfterRefill verifies that messages get through again once the
+// bucket has refilled. Since rateLimiter.allow takes the current instant from
+// its caller, this is the one check that the read pump hands it a real clock
+// that advances rather than a frozen or stale one — a unit test driving the
+// limiter directly cannot see that, which is why the sleep stays.
 func testMessageAfterRefill(t *testing.T, sender, receiver *websocket.Conn, refillInterval time.Duration) {
 	t.Helper()
 
-	// Not a synchronization sleep: the token bucket refills on wall-clock time,
-	// so the only way to observe a refill is to let that time pass.
+	// Not a synchronization sleep: reaching the limiter through a real socket
+	// means going through NewClient, so real wall-clock time is the only clock
+	// this test can advance.
 	time.Sleep(refillInterval + 100*time.Millisecond)
 
 	if err := sender.WriteMessage(websocket.TextMessage, mustMarshalMessage(t, "after-refill")); err != nil {

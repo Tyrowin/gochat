@@ -29,14 +29,14 @@ See [Deploying to production](../guides/deploying-to-production.md).
 ## Code layout
 
 ```
-cmd/server/main.go          Entry point: config → hub → routes → HTTP server → signal handling
+cmd/server/main.go          Entry point: logger, config, signal handling, Service.Run
 internal/server/
-  config.go                 Env parsing, defaults, sanitization, the atomic config snapshot
+  service.go                The service lifecycle: build, run, and drain in order
+  config.go                 Env parsing, defaults, sanitization, the resolved config a hub owns
   logging.go                Structured log/slog logger and LOG_LEVEL handling
   routes.go                 ServeMux wiring for /, /ws, /test
   handlers.go               Upgrade handler, health handler, embedded test page
   testpage.html             The /test page, compiled into the binary with go:embed
-  http_server.go            http.Server construction, start/stop, global hub accessor
   hub.go                    Client registry, broadcast fan-out, shutdown coordination
   client.go                 Per-connection read and write pumps
   origin.go                 Origin normalization and allow-list checks
@@ -53,47 +53,88 @@ package comment on each file describes that file's slice of responsibility.
 
 ## Components
 
-**Hub** (`hub.go`) — owns the set of connected clients. A single goroutine runs `Hub.Run`, selecting
-over five channels: `register`, `unregister`, `broadcast`, `countReq`, and `shutdown`.
+**Service** (`service.go`) — the whole running server behind two functions. `New(cfg)` builds the
+hub, the routes bound to it, and the `http.Server` that fronts them; `Run(ctx)` starts them and
+drains them when `ctx` is cancelled. Nothing else is exported from the lifecycle, so the shutdown
+ordering below cannot be got wrong by a caller — including a test, which is why the tests drive the
+real thing rather than a copy of it.
+
+**Hub** (`hub.go`) — owns the set of connected clients and the configuration they run under.
+`NewHub(cfg)` resolves the configuration once and keeps it, so the origin allow-list, the message
+size limit, and the rate limit belong to that hub rather than to the process. `Start()` launches a
+single goroutine — the hub's run loop — which selects over five channels: `register`, `unregister`,
+`broadcast`, `countReq`, and `shutdown`.
 
 That goroutine is the *sole* owner of the client map: registration, unregistration, fan-out, and
-shutdown all happen inside `Run`, so the map needs no lock at all. Broadcasts iterate the map
+shutdown all happen inside the run loop, so the map needs no lock at all. Broadcasts iterate the map
 directly instead of copying it, and the slice of failed clients is scratch space reused across
 messages, which makes the fan-out path allocation-free. The rule that keeps this sound is simple:
 every mutation of the client set must arrive through one of the hub's channels.
 
-Reads obey the same rule. `ClientCount()` sends a reply channel down `countReq` and lets `Run`
-answer it, rather than reading the map from the caller's goroutine. Because `Run` is sequential, a
-reply also proves everything queued before the request has already been processed — which is what
-makes it a usable synchronization barrier in tests.
+What that map holds is not a `*Client` but `clientConn`, the hub's own four-method view of one: an
+inbox to deliver into, a `serve` to run, a connection to close at shutdown, and an address to log.
+The client satisfies it over a real socket; a test registers a fake with no socket at all, which is
+the only practical way to reach the drop-on-full rule below — see [Testing](../guides/testing.md).
+The map's *value* is that inbox, read once when the client registers, so the fan-out sends on a
+channel it already has rather than calling back through the interface for every client on every
+message. Naming the seam therefore costs the broadcast path nothing: it measures slightly faster at
+1000 clients than dereferencing the channel out of each client did, because the channel now sits in
+the map next to the key instead of one pointer hop away in the client's own memory.
+
+Those channels are the hub's own, though — nothing outside it sends on them. What it exports is
+intent: `Register(ctx, client)`, `Unregister(client)`, and `Publish(msg)`. Each one owns the race a
+raw channel send would leave to its caller, because the run loop stops reading the moment shutdown
+is signalled: `Register` and `Publish` report `false` instead of blocking forever, and `Unregister`
+becomes a no-op. Registration additionally gives up when the request context is done, so a client
+whose HTTP request went away never joins. Handing out the channels instead would mean every caller
+re-deriving all of that.
+
+Reads obey the same rule. `ClientCount()` sends a reply channel down `countReq` and lets the run
+loop answer it, rather than reading the map from the caller's goroutine. Because the loop is
+sequential, a reply also proves everything queued before the request has already been processed —
+which is what makes it a usable synchronization barrier in tests.
 
 **Client** (`client.go`) — one per connection, with two goroutines:
 
 - *read pump* — reads frames, enforces the rate limit, normalizes the payload, and hands it to
-  the hub's broadcast channel. Exits on any read error and unregisters the client.
+  `Hub.Publish`. Exits on any read error and unregisters the client.
 - *write pump* — selects over the client's 256-message `send` channel, a 54-second ping ticker, and
   the hub's shutdown channel. Coalesces anything already queued into the current frame, separated by
   newlines, so a burst costs one frame rather than one per message.
 
 Splitting reads and writes is required by `gorilla/websocket`: at most one concurrent reader and one
-concurrent writer are allowed per connection.
+concurrent writer are allowed per connection. How many pumps that takes is the client's business, not
+the hub's: the hub starts one goroutine per registered client, running `serve`, which runs the read
+pump on that goroutine, the write pump on a second, and returns only once both have exited. The hub's
+`WaitGroup` therefore has one entry per connection rather than two, and still covers both pumps.
 
 **Rate limiter** (`rate_limiter.go`) — a token bucket per connection, embedded in the `Client` by
 value. Tokens refill continuously from elapsed time rather than on a timer, so there is no background
 goroutine and no allocation per client. It carries no mutex because only that connection's read pump
 ever touches it; sharing a limiter across goroutines would be a bug.
 
-**Origin validation** (`origin.go`) — normalizes the `Origin` header to lowercase `scheme://host` and
-looks it up in a set built once at startup. Wired into the upgrader as `CheckOrigin`, so rejection
-happens before any connection resources are allocated. Headers that are already canonical — which is
-what browsers send — match the set directly and skip URL parsing entirely. A request with no `Origin`
-header is always rejected, even when the allow-list contains `*`.
+The bucket does not read the clock: both the constructor and `allow(now)` take the current instant
+from the caller, and the read pump supplies `time.Now()` at the single production call site. That is
+what makes refill observable — the unit tests advance a fixed instant by hand and pin partial refill,
+the cap at capacity, a clock that does not move, and one that goes backwards, none of which can be
+seen from a test that has to spend the real time first. The clock is a parameter rather than a
+`func() time.Time` field on the struct deliberately: a limiter sits by value inside every `Client` and
+`allow` runs once per message, so a function-valued field would add an indirect call to the hot path
+and a word to every connection. Passing the instant costs neither.
 
-**Config** (`config.go`) — parsed from the environment at startup, sanitized, and published as an
-immutable snapshot in an `atomic.Pointer`. Readers on the connection path load the pointer without
-locking; `SetConfig` swaps in a whole new snapshot rather than mutating the live one. `SetConfig(nil)`
-restores defaults, which is what the tests use. Invalid values never abort startup; they log and fall
-back.
+**Origin validation** (`origin.go`) — normalizes the `Origin` header to lowercase `scheme://host` and
+looks it up in a set built once when the hub is constructed. It is a method on that hub's resolved
+configuration, bound into the hub's own upgrader as `CheckOrigin`, so rejection happens before any
+connection resources are allocated. Headers that are already canonical — which is what browsers send
+— match the set directly and skip URL parsing entirely. A request with no `Origin` header is always
+rejected, even when the allow-list contains `*`.
+
+**Config** (`config.go`) — parsed from the environment at startup into a `Config`, then resolved once
+by `NewHub`: defaults substituted for anything invalid, the allow-list normalized into a lookup set.
+The result is a value the hub owns and never mutates, so readers on the connection path need neither
+a lock nor an atomic load, and two hubs in one process can be configured differently. The caller's
+`Config` is copied on the way in, so changing it afterwards cannot change a running hub. Invalid
+values never abort startup; they log and fall back.
 
 **Logging** (`logging.go`) — a single `log/slog` logger shared by the package, its level read from
 `LOG_LEVEL`. Per-message records are emitted at debug level behind a `debugEnabled()` check, so at
@@ -139,33 +180,44 @@ its messages being queued indefinitely.
 
 ## Lifecycle
 
-**Startup** (`main.go`): read config → apply it globally → start the hub goroutine → build the mux →
-construct `http.Server` with 15s read/write and 60s idle timeouts → `ListenAndServe` in a goroutine →
-block on either a server error or `SIGINT`/`SIGTERM`.
+`main` supplies the logger, the config, and a context cancelled on `SIGINT`/`SIGTERM`, then calls
+`Run`. It holds no lifecycle logic of its own, so the ordering below is reachable from a test.
 
-**Shutdown**, on signal, in strict order with a 30-second overall cap. `main` builds one
+**Startup** (`New`, then `Run`): `New` hands the config to the hub, which resolves and keeps it,
+builds the mux, and constructs the `http.Server` with 15s read/write and 60s idle timeouts. `Run` starts the hub
+goroutine, calls `ListenAndServe` in a goroutine, and blocks on either a listener error or the
+context being done.
+
+**Shutdown**, on cancellation, in strict order with a 30-second overall cap. `Run` builds one
 `context.Context` carrying that cap and derives a 15-second child for each stage, so a stage that
 overruns cannot borrow the other's budget:
 
-1. `ShutdownServer` (15s context) — stops accepting connections and drains in-flight requests.
+1. `http.Server.Shutdown` (15s context) — stops accepting connections and drains in-flight requests.
+   Upgraded WebSocket connections are hijacked, so this stage does not wait on them.
 2. `Hub.Shutdown` (15s context) — closes the `shutdown` channel, which stops the run loop, closes
    every client connection, and waits on the `WaitGroup` for all pumps to exit. Both of those waits
    share the one 15-second deadline.
 
-The `shutdown` channel appears in every blocking select in the codebase — registration, broadcast,
-and the write pump — so nothing can block shutdown by waiting on a channel nobody will read.
+The two errors are joined rather than short-circuited, so a hub that overran is still reported when
+the HTTP stage failed too.
+
+The `shutdown` channel appears in every blocking select in the codebase — inside `Register`,
+`Unregister`, and `Publish`, and in the write pump's own event loop — so nothing can block shutdown
+by waiting on a channel nobody will read.
 
 ## Concurrency model
 
-| Goroutine        | Count            | Lifetime                       |
-| ---------------- | ---------------- | ------------------------------ |
-| `Hub.Run`        | 1                | Process lifetime               |
-| Client read pump | 1 per connection | Until read error or shutdown   |
-| Client write pump| 1 per connection | Until send closed or shutdown  |
-| `ListenAndServe` | 1                | Process lifetime               |
+| Goroutine        | Count            | Lifetime                       | Started by                |
+| ---------------- | ---------------- | ------------------------------ | ------------------------- |
+| Hub run loop     | 1                | Process lifetime               | `Hub.Start`               |
+| Client read pump | 1 per connection | Until read error or shutdown   | Hub run loop, via `serve` |
+| Client write pump| 1 per connection | Until send closed or shutdown  | `Client.serve`            |
+| `ListenAndServe` | 1                | Process lifetime               | `Service.Run`             |
 
-Roughly two goroutines and a 256-message buffer per connection. The whole suite runs under `-race`
-in CI because this is where the risk lives.
+Roughly two goroutines and a 256-message buffer per connection. Only the first of the two is the
+hub's to launch and to wait on; the second belongs to the client, which is why `serve` does not
+return until it has stopped. The whole suite runs under `-race` in CI because this is where the risk
+lives.
 
 ## Performance
 
@@ -196,10 +248,12 @@ frame.
 
 ## Design trade-offs
 
-**Global hub and global config.** `GlobalHub()` and the package-level config snapshot are process-wide
-singletons. This keeps `main.go` to a hundred lines, at the cost of testability — the test suite
-works around it with `SetupRoutesWithHub` and `SetConfig`. Threading a `*Hub` and `*Config` through
-explicitly would be the natural refactor if the server ever grows a second hub (rooms, namespaces).
+**Nothing configurable is global.** The hub belongs to a `Service` and the configuration belongs to
+the hub, so a process can run as many services as it likes with different origin rules and different
+limits — which is what lets every test have a real server of its own and run alongside the others.
+What is still process-wide is deliberately not configurable per hub: the logger, and the
+`sync.Pool` of write buffers that keeps memory flat as connections accumulate. The cost is that a
+hub's settings are fixed once it is built; changing them means building another one.
 
 **No message history, no persistence.** Nothing is stored, so there is no database, no migration
 path, and no state to back up. A client that reconnects starts from silence.

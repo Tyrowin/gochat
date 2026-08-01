@@ -32,13 +32,23 @@ var (
 // the connection count grows.
 var writeBufferPool = &sync.Pool{}
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	WriteBufferPool: writeBufferPool,
-	CheckOrigin:     checkOrigin,
+// newUpgrader builds the upgrader for one hub. CheckOrigin is bound to that
+// hub's resolved configuration, so the allow-list is per hub rather than per
+// process; the write buffer pool is deliberately not, since sharing it is what
+// keeps memory flat as the connection count grows.
+func newUpgrader(cfg *resolvedConfig) websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		WriteBufferPool: writeBufferPool,
+		CheckOrigin:     cfg.checkOrigin,
+	}
 }
 
+// webSocketHandlerForHub returns the handler for WebSocket upgrade requests
+// against h. It validates that the request uses the GET method, upgrades the
+// HTTP connection to WebSocket, creates a new Client instance, and registers it
+// with the hub, which starts the client's read/write pumps.
 func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -51,7 +61,7 @@ func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 			return
 		}
 
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := h.upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log().Warn("websocket upgrade failed", "remote_addr", r.RemoteAddr, "error", err)
 			return
@@ -59,22 +69,12 @@ func webSocketHandlerForHub(h *Hub) http.HandlerFunc {
 
 		client := NewClient(conn, h, r.RemoteAddr)
 
-		select {
-		case h.register <- client:
-		case <-h.shutdown:
-			log().Info("rejected websocket client; hub is shutting down", "remote_addr", r.RemoteAddr)
-			client.closeConnection()
-		case <-r.Context().Done():
+		// A rejected client was never added to the hub, so closing it is the
+		// handler's job.
+		if !h.Register(r.Context(), client) {
 			client.closeConnection()
 		}
 	}
-}
-
-// WebSocketHandler handles WebSocket upgrade requests and manages client connections.
-// It validates that the request uses the GET method, upgrades the HTTP connection
-// to WebSocket, creates a new Client instance, and starts the client's read/write pumps.
-func WebSocketHandler(w http.ResponseWriter, r *http.Request) {
-	webSocketHandlerForHub(GlobalHub()).ServeHTTP(w, r)
 }
 
 // writeStatic serves a fixed body whose length is known ahead of time, skipping

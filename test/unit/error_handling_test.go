@@ -3,6 +3,7 @@ package unit
 import (
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
@@ -14,19 +15,23 @@ import (
 
 const errMsgFailedToClose = "Failed to close connection: %v"
 
-// errorTestServer starts a server backed by a hub of its own, so a test can
-// observe exactly its own clients rather than whatever the global hub holds.
-// It returns the ws:// URL of the endpoint and that hub.
+// errorTestServer starts a server backed by a hub of its own, configured to
+// allow that server's origin and nothing else, so a test observes exactly its
+// own clients and its own settings. It returns the ws:// URL of the endpoint and
+// that hub.
 func errorTestServer(t *testing.T) (wsURL string, hub *server.Hub) {
 	t.Helper()
 
-	hub = startHub(t)
-	httpServer := testhelpers.CreateTestServer(t, server.SetupRoutesWithHub(hub))
+	// The hub owns its configuration, so the allow-list has to name the server
+	// before the hub exists: CreateTestServer opens the listener first and
+	// hands its URL in.
+	httpServer := testhelpers.CreateTestServer(t, func(baseURL string) http.Handler {
+		cfg := server.NewConfig()
+		cfg.AllowedOrigins = []string{baseURL}
 
-	cfg := server.NewConfig()
-	cfg.AllowedOrigins = []string{httpServer.URL}
-	server.SetConfig(cfg)
-	t.Cleanup(func() { server.SetConfig(nil) })
+		hub = startHub(t, cfg)
+		return server.SetupRoutesWithHub(hub)
+	})
 
 	parsed, err := url.Parse(httpServer.URL)
 	if err != nil {
@@ -41,6 +46,8 @@ func errorTestServer(t *testing.T) (wsURL string, hub *server.Hub) {
 // TestWriteAfterCloseFails verifies that writing to a connection the client has
 // already closed reports an error rather than silently succeeding.
 func TestWriteAfterCloseFails(t *testing.T) {
+	t.Parallel()
+
 	wsURL, _ := errorTestServer(t)
 	conn := testhelpers.Dial(t, wsURL, originOf(t, wsURL))
 
@@ -61,6 +68,8 @@ func TestWriteAfterCloseFails(t *testing.T) {
 // idle connection surfaces as a timeout rather than hanging or reporting
 // success.
 func TestReadDeadlineProducesTimeout(t *testing.T) {
+	t.Parallel()
+
 	wsURL, _ := errorTestServer(t)
 	conn := testhelpers.Dial(t, wsURL, originOf(t, wsURL))
 
@@ -82,6 +91,8 @@ func TestReadDeadlineProducesTimeout(t *testing.T) {
 // TestClientRegistersAndUnregisters verifies that the hub tracks a connection
 // for exactly as long as it is open — the accounting every error path relies on.
 func TestClientRegistersAndUnregisters(t *testing.T) {
+	t.Parallel()
+
 	wsURL, hub := errorTestServer(t)
 	conn := testhelpers.Dial(t, wsURL, originOf(t, wsURL))
 
@@ -102,6 +113,8 @@ func TestClientRegistersAndUnregisters(t *testing.T) {
 // cannot parse is discarded without tearing the sender's connection down: the
 // next valid message from the same connection still reaches everyone else.
 func TestMalformedMessageKeepsConnectionOpen(t *testing.T) {
+	t.Parallel()
+
 	wsURL, hub := errorTestServer(t)
 	origin := originOf(t, wsURL)
 	sender, receiver := testhelpers.DialPair(t, wsURL, origin)

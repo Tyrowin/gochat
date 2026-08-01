@@ -1,0 +1,143 @@
+// Package server verifies the parts of the service that its exported interface
+// deliberately hides: the HTTP server New builds, the routes it serves, and the
+// listen address it resolves.
+package server
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+)
+
+// TestNewConfiguresHTTPServer pins the production HTTP server settings New
+// applies. They are not reachable from outside the package, so this is where
+// the timeouts and the header limit are asserted.
+func TestNewConfiguresHTTPServer(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewConfig()
+	cfg.Port = ":18090"
+
+	svc := New(cfg)
+
+	if svc.Hub() == nil {
+		t.Fatal("New returned a service without a hub")
+	}
+	if svc.httpServer.Handler == nil {
+		t.Fatal("New returned a service without routes")
+	}
+	if svc.httpServer.Addr != cfg.Port {
+		t.Errorf("Expected server addr %s, got %s", cfg.Port, svc.httpServer.Addr)
+	}
+
+	timeouts := []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{"ReadTimeout", svc.httpServer.ReadTimeout, 15 * time.Second},
+		{"ReadHeaderTimeout", svc.httpServer.ReadHeaderTimeout, 5 * time.Second},
+		{"WriteTimeout", svc.httpServer.WriteTimeout, 15 * time.Second},
+		{"IdleTimeout", svc.httpServer.IdleTimeout, 60 * time.Second},
+	}
+	for _, tt := range timeouts {
+		if tt.got != tt.want {
+			t.Errorf("Expected %s %v, got %v", tt.name, tt.want, tt.got)
+		}
+	}
+
+	if svc.httpServer.MaxHeaderBytes != 1<<16 {
+		t.Errorf("Expected MaxHeaderBytes %d, got %d", 1<<16, svc.httpServer.MaxHeaderBytes)
+	}
+}
+
+// TestNewServesTheApplicationRoutes verifies that the handler New builds answers
+// the health route, so the service is wired to the real mux rather than an empty
+// one.
+func TestNewServesTheApplicationRoutes(t *testing.T) {
+	t.Parallel()
+
+	svc := New(NewConfig())
+
+	rec := httptest.NewRecorder()
+	svc.httpServer.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status %d from /, got %d", http.StatusOK, rec.Code)
+	}
+	if rec.Body.String() != HealthResponse {
+		t.Errorf("Expected body %q, got %q", HealthResponse, rec.Body.String())
+	}
+}
+
+// TestProductionTimeoutsAllowSlowResponses verifies that a response slower than
+// a moment still completes under the timeouts New applies, so the production
+// write timeout is not cutting responses off early.
+func TestProductionTimeoutsAllowSlowResponses(t *testing.T) {
+	t.Parallel()
+
+	// A handler slower than any synchronization delay in this suite. The sleep
+	// is the behavior under test, not a wait for something else to happen.
+	const handlerDelay = 2 * time.Second
+
+	production := New(NewConfig()).httpServer
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/slow", func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(handlerDelay)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	testServer := httptest.NewUnstartedServer(mux)
+	testServer.Config.ReadTimeout = production.ReadTimeout
+	testServer.Config.WriteTimeout = production.WriteTimeout
+	testServer.Config.IdleTimeout = production.IdleTimeout
+	testServer.Start()
+	t.Cleanup(testServer.Close)
+
+	client := testServer.Client()
+	client.Timeout = handlerDelay + 5*time.Second
+
+	resp, err := client.Get(testServer.URL + "/slow")
+	if err != nil {
+		t.Fatalf("Slow request failed under the production timeouts: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status %d, got %d", http.StatusOK, resp.StatusCode)
+	}
+}
+
+// TestNewListensOnTheResolvedPort pins the contract documented in
+// docs/reference/configuration.md: SERVER_PORT=9000 and SERVER_PORT=:9000 are
+// equivalent. New must take the port the hub resolved, not the caller's raw
+// value, because http.Server.Addr rejects a bare port.
+func TestNewListensOnTheResolvedPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		port string
+		want string
+	}{
+		{"bare port gains a colon", "18091", ":18091"},
+		{"already qualified is left alone", ":18092", ":18092"},
+		{"host and port are left alone", "127.0.0.1:18093", "127.0.0.1:18093"},
+		{"empty falls back to the default", "", defaultPort},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := NewConfig()
+			cfg.Port = tt.port
+
+			if got := New(cfg).httpServer.Addr; got != tt.want {
+				t.Errorf("Expected addr %q for port %q, got %q", tt.want, tt.port, got)
+			}
+		})
+	}
+}
