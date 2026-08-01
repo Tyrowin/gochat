@@ -18,14 +18,6 @@ import (
 // pollInterval is how often WaitFor re-evaluates its condition.
 const pollInterval = 5 * time.Millisecond
 
-// ServerTimeouts groups the HTTP timeouts a test server overrides. They travel
-// together everywhere, so they are one value rather than three parameters.
-type ServerTimeouts struct {
-	Read  time.Duration
-	Write time.Duration
-	Idle  time.Duration
-}
-
 // CreateTestServer creates a test HTTP server whose handler is built from the
 // server's own base URL — a hub that has to allow its own origin, for instance.
 // The listener is opened before build is called, so the URL is already known by
@@ -39,23 +31,6 @@ func CreateTestServer(t *testing.T, build func(baseURL string) http.Handler) *ht
 	server.Config.Handler = build("http://" + server.Listener.Addr().String())
 	server.Start()
 
-	return server
-}
-
-// CreateTestServerWithTimeouts creates a test server with custom HTTP timeouts,
-// for exercising server behavior under different timeout conditions.
-func CreateTestServerWithTimeouts(t *testing.T, handler http.Handler, timeouts ServerTimeouts) *httptest.Server {
-	t.Helper()
-
-	server := httptest.NewUnstartedServer(handler)
-	server.Config = &http.Server{
-		Handler:      handler,
-		ReadTimeout:  timeouts.Read,
-		WriteTimeout: timeouts.Write,
-		IdleTimeout:  timeouts.Idle,
-	}
-	server.Start()
-	t.Cleanup(server.Close)
 	return server
 }
 

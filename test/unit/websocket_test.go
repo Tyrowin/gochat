@@ -226,12 +226,16 @@ func TestHubsCarryTheirOwnOriginPolicy(t *testing.T) {
 	}
 
 	for _, tt := range cases {
-		status := upgradeStatus(t, tt.routes, tt.origin)
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-		if blocked := status == http.StatusForbidden; blocked != tt.blocked {
-			t.Errorf("%s: expected blocked=%v for origin %s, got status %d",
-				tt.name, tt.blocked, tt.origin, status)
-		}
+			status := upgradeStatus(t, tt.routes, tt.origin)
+
+			if blocked := status == http.StatusForbidden; blocked != tt.blocked {
+				t.Errorf("Expected blocked=%v for origin %s, got status %d",
+					tt.blocked, tt.origin, status)
+			}
+		})
 	}
 }
 

@@ -1,3 +1,6 @@
+// Package server verifies the parts of the service that its exported interface
+// deliberately hides: the HTTP server New builds, the routes it serves, and the
+// listen address it resolves.
 package server
 
 import (

@@ -65,6 +65,10 @@ func TestGracefulShutdownWithClients(t *testing.T) {
 // the order is read off the log the service emits rather than raced against
 // from outside. Afterwards the port must refuse connections and every client
 // must be closed.
+//
+// This is the one test in the suite that cannot call t.Parallel(): reading the
+// order off the log means swapping the logger, and SetLogger is still
+// process-wide, so a parallel test would capture records from its neighbours.
 func TestShutdownStopsAcceptingBeforeDrainingClients(t *testing.T) {
 	const port = ":18085"
 
