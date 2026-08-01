@@ -90,7 +90,9 @@ func TestShutdownStopsAcceptingBeforeDrainingClients(t *testing.T) {
 
 	verifyClientsDisconnected(t, clients, len(clients))
 
-	if conn, err := net.DialTimeout("tcp", "localhost"+port, time.Second); err == nil {
+	// The address the service actually bound, not one that merely resolves to it:
+	// a refusal from somewhere else would pass this assertion for free.
+	if conn, err := net.DialTimeout("tcp", svc.addr, time.Second); err == nil {
 		_ = conn.Close()
 		t.Error("HTTP server was still accepting connections after shutdown")
 	}
