@@ -36,6 +36,13 @@ client. `Hub.Register` and `Hub.Unregister` take `clientConn`, the hub's own vie
 only this package can name. `Hub.Publish` loses the same shutdown race and is tested from
 `test/unit`, where it belongs, because it needs no client at all.
 
+A fourth kind lives there too: checks on the package's own shape rather than on behaviour anyone
+outside can call. `TestResolveConfigPreservesEveryField` compares a resolved `Config` field for field
+so a field added to the struct cannot be dropped in resolution unnoticed, and
+`rate_limiter_internal_test.go` holds `TestClockSeamIsTestOnly`, which parses the package's non-test
+sources to keep production off the rate limiter's clock seam. Neither is reachable from outside the
+package by construction — one names an unexported type, the other reads the package's own files.
+
 That view is also what makes the hub's delivery rules testable at all. `hub_internal_test.go` defines
 a `fakeClient` — an inbox and an address, no socket underneath — and registers it through the real
 `Hub.Register`, so the fan-out, sender exclusion, the backpressure drop, and no-op unregistration are
@@ -136,11 +143,16 @@ Follow the conventions already in the suite:
   hub's `ClientCount()` is answered by its own event loop, so a reply proves every registration,
   unregistration, and broadcast queued before it has been processed — that is the barrier to wait on,
   via `testhelpers.WaitFor`. A `time.Sleep` is only acceptable when elapsed wall-clock time is the
-  behavior under test and there is no clock to drive by hand; say so in a comment. Prefer taking the
-  instant as a parameter so there is one, as `rateLimiter.allow(now)` does — the refill rules are
-  pinned by unit tests that advance a fixed instant, and the one surviving sleep, in
+  behavior under test and there is no clock to drive by hand; say so in a comment. Prefer giving
+  yourself one, the way the rate limiter does: `allow()` reads the clock so production has nothing to
+  get wrong, and an `allowAt(now)` beside it takes the instant for the tests. The refill rules are
+  pinned by unit tests that drive `allowAt` from a fixed instant; the one surviving sleep, in
   `TestWebSocketRateLimiting`, is there because reaching the limiter through a real socket goes
-  through `NewClient` and can only be given the real clock.
+  through `NewClient` and gets the real clock. A clock a caller can pass is a limit a caller can
+  loosen, so keep production off a seam like that — and since Go has no visibility level that says
+  "tests only", assert it: `TestClockSeamIsTestOnly` parses the package's non-test files and fails if
+  anything but the wrapper names the seam. Say in the test what such a check does *not* cover; that
+  one guards the seam functions, not every route to a stale baseline.
 
 ### Benchmarks
 

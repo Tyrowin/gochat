@@ -322,32 +322,43 @@ func TestHubRejectsClientWorkAfterShutdown(t *testing.T) {
 	}
 }
 
-// rateLimiterEpoch is an arbitrary fixed instant. Because allow takes the
-// current time as an argument, every test below advances the clock by hand and
-// pins refill by arithmetic instead of by sleeping.
+// rateLimiterEpoch is an arbitrary fixed instant. Every refill test below goes
+// through the allowAt seam so it can advance the clock by hand and pin refill
+// by arithmetic instead of by sleeping.
 var rateLimiterEpoch = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// drainRateLimiter spends a full bucket at now and asserts the next message is
-// refused, leaving the limiter empty with its baseline at now.
-func drainRateLimiter(t *testing.T, rl *rateLimiter, capacity int, now time.Time) {
+// drainRateLimiter spends a full bucket and asserts the next message is refused,
+// leaving the limiter empty.
+//
+// How the limiter is reached is the caller's to supply, because the tests below
+// reach it two ways: the refill tests spend through the seam at a fixed instant,
+// via [attemptAt], while the one test that drives the production path passes
+// allow itself.
+func drainRateLimiter(t *testing.T, capacity int, attempt func() bool) {
 	t.Helper()
 
 	for i := range capacity {
-		if !rl.allow(now) {
+		if !attempt() {
 			t.Fatalf("burst token %d was denied", i)
 		}
 	}
 
-	if rl.allow(now) {
+	if attempt() {
 		t.Fatal("limiter allowed a message past its burst")
 	}
+}
+
+// attemptAt is the attempt [drainRateLimiter] needs to spend rl through the seam
+// at a fixed instant, leaving its baseline at now.
+func attemptAt(rl *rateLimiter, now time.Time) func() bool {
+	return func() bool { return rl.allowAt(now) }
 }
 
 // allowedAt reports how many messages the limiter permits at a single instant,
 // stopping at the first refusal and giving up after limit calls.
 func allowedAt(rl *rateLimiter, now time.Time, limit int) int {
 	for i := range limit {
-		if !rl.allow(now) {
+		if !rl.allowAt(now) {
 			return i
 		}
 	}
@@ -362,7 +373,7 @@ func TestZeroValueRateLimiterAllows(t *testing.T) {
 
 	c := &Client{}
 	for i := range 100 {
-		if !c.rateLimiter.allow(rateLimiterEpoch) {
+		if !c.rateLimiter.allow() {
 			t.Fatalf("zero-value limiter denied message %d", i)
 		}
 	}
@@ -370,11 +381,26 @@ func TestZeroValueRateLimiterAllows(t *testing.T) {
 
 // TestRateLimiterThrottlesAtCapacity checks the configured limiter still
 // throttles, so the zero-value escape hatch has not disabled the real path.
+//
+// It reaches the limiter the way the read pump does, through the no-argument
+// entry points, which is what it is for: those read the clock themselves, so an
+// hour-long refill interval cannot hand a token back mid-test and the burst is
+// the whole budget. The refill arithmetic is pinned below, against the allowAt
+// seam.
+//
+// What it does not do is check the constructor's baseline against allow's
+// clock, in either direction. A baseline behind the clock is absorbed by the cap
+// at capacity, so a bucket that starts full arrives full anyway; one ahead of it
+// yields negative elapsed time, which allowAt skips — and over the microseconds
+// this test runs, neither shows up as a token granted or withheld. The mutants
+// were tried and survived.
 func TestRateLimiterThrottlesAtCapacity(t *testing.T) {
 	t.Parallel()
 
-	rl := newRateLimiter(3, time.Hour, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, 3, rateLimiterEpoch)
+	const capacity = 3
+	rl := newRateLimiter(capacity, time.Hour)
+
+	drainRateLimiter(t, capacity, rl.allow)
 }
 
 // TestRateLimiterRefillsFromElapsedTime pins partial refill. Four tokens per
@@ -385,8 +411,8 @@ func TestRateLimiterRefillsFromElapsedTime(t *testing.T) {
 	t.Parallel()
 
 	const capacity = 4
-	rl := newRateLimiter(capacity, time.Second, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	rl := newRateLimiterAt(capacity, time.Second, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	if n := allowedAt(&rl, rateLimiterEpoch.Add(600*time.Millisecond), capacity); n != 2 {
 		t.Fatalf("600ms of refill allowed %d messages, want 2", n)
@@ -407,8 +433,8 @@ func TestRateLimiterRestoresBurstAfterOneInterval(t *testing.T) {
 		interval = 500 * time.Millisecond
 	)
 
-	rl := newRateLimiter(capacity, interval, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	rl := newRateLimiterAt(capacity, interval, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	if n := allowedAt(&rl, rateLimiterEpoch.Add(interval), capacity+1); n != capacity {
 		t.Fatalf("one interval restored %d messages, want %d", n, capacity)
@@ -425,8 +451,8 @@ func TestRateLimiterCapsRefillAtCapacity(t *testing.T) {
 		interval = time.Second
 	)
 
-	rl := newRateLimiter(capacity, interval, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	rl := newRateLimiterAt(capacity, interval, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	if n := allowedAt(&rl, rateLimiterEpoch.Add(100*interval), capacity*10); n != capacity {
 		t.Fatalf("100 idle intervals allowed %d messages, want %d", n, capacity)
@@ -440,11 +466,11 @@ func TestRateLimiterGrantsNothingWithoutElapsedTime(t *testing.T) {
 	t.Parallel()
 
 	const capacity = 2
-	rl := newRateLimiter(capacity, time.Second, rateLimiterEpoch)
-	drainRateLimiter(t, &rl, capacity, rateLimiterEpoch)
+	rl := newRateLimiterAt(capacity, time.Second, rateLimiterEpoch)
+	drainRateLimiter(t, capacity, attemptAt(&rl, rateLimiterEpoch))
 
 	for i := range 10 {
-		if rl.allow(rateLimiterEpoch) {
+		if rl.allowAt(rateLimiterEpoch) {
 			t.Fatalf("a frozen clock refilled a token at call %d", i)
 		}
 	}
@@ -461,26 +487,27 @@ func TestRateLimiterIgnoresBackwardsClock(t *testing.T) {
 
 	// A rewound clock neither grants tokens nor destroys them: the full burst is
 	// still spendable, and it is still only a burst.
-	rl := newRateLimiter(capacity, time.Second, rateLimiterEpoch)
+	rl := newRateLimiterAt(capacity, time.Second, rateLimiterEpoch)
 	if n := allowedAt(&rl, past, capacity+1); n != capacity {
 		t.Fatalf("a backwards clock left %d messages of burst, want %d", n, capacity)
 	}
 
 	// Nor may it move the baseline: if it had, this call would see an hour of
 	// elapsed time rather than nothing since the epoch.
-	if rl.allow(rateLimiterEpoch) {
+	if rl.allowAt(rateLimiterEpoch) {
 		t.Fatal("limiter refilled from a rewound baseline")
 	}
 }
 
+// BenchmarkRateLimiterAllow measures the production entry point, clock read
+// included: the read pump calls allow once per message, so timing allowAt
+// instead would leave out work the hot path really does.
 func BenchmarkRateLimiterAllow(b *testing.B) {
-	rl := newRateLimiter(1_000_000, time.Second, time.Now())
+	rl := newRateLimiter(1_000_000, time.Second)
 
 	b.ReportAllocs()
-	// time.Now() stays inside the loop: the production caller reads the clock
-	// per message, so hoisting it would measure less work than the hot path does.
 	for b.Loop() {
-		rl.allow(time.Now())
+		rl.allow()
 	}
 }
 

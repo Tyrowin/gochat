@@ -17,10 +17,19 @@ type rateLimiter struct {
 }
 
 // newRateLimiter builds a full bucket of capacity tokens that refills over
-// interval, starting the clock at now. Capacity and interval must be positive:
-// [resolveConfig] substitutes a default for anything else before a hub — and
-// therefore a Client — ever sees it.
-func newRateLimiter(capacity int, interval time.Duration, now time.Time) rateLimiter {
+// interval, starting from the current instant. Capacity and interval must be
+// positive: [resolveConfig] substitutes a default for anything else before a
+// hub — and therefore a Client — ever sees it.
+func newRateLimiter(capacity int, interval time.Duration) rateLimiter {
+	return newRateLimiterAt(capacity, interval, time.Now())
+}
+
+// newRateLimiterAt is [newRateLimiter] with the starting instant supplied. It is
+// the constructor half of the test seam and pairs with [rateLimiter.allowAt] —
+// a limiter started at one clock must be spent on that same clock, so the two
+// are used together or not at all. The same test-only constraint governs both;
+// it is stated once, on [rateLimiter.allowAt].
+func newRateLimiterAt(capacity int, interval time.Duration, now time.Time) rateLimiter {
 	perNano := float64(capacity) / float64(interval)
 	if perNano <= 0 {
 		perNano = float64(capacity)
@@ -34,21 +43,33 @@ func newRateLimiter(capacity int, interval time.Duration, now time.Time) rateLim
 	}
 }
 
-// allow consumes a token and reports whether the caller may proceed. The caller
-// supplies the current instant, which is what makes refill observable without
-// spending wall-clock time; production passes time.Now(). A now that does not
-// advance refills nothing, and one that goes backwards is ignored rather than
-// draining the bucket.
-//
-// The clock is a parameter rather than a field on purpose: a limiter is
-// embedded by value in every Client and this is a per-message path, so a
-// func-valued field would cost an indirect call per message and grow every
-// Client.
+// allow consumes a token and reports whether the caller may proceed. It reads
+// the clock itself, so a caller on this path cannot weaken the configured
+// throttle by supplying an instant — there is none to supply.
 //
 // The zero value permits everything. A limiter only throttles once
 // [newRateLimiter] has given it a capacity, so a Client assembled without one
 // — as tests do — is unlimited rather than silently blocked.
-func (rl *rateLimiter) allow(now time.Time) bool {
+func (rl *rateLimiter) allow() bool {
+	return rl.allowAt(time.Now())
+}
+
+// allowAt is [rateLimiter.allow] with the current instant supplied, which is
+// what makes refill observable without spending wall-clock time. It exists for
+// the unit tests, which advance a fixed instant by hand and pin the refill
+// arithmetic exactly. A now that does not advance refills nothing, and one that
+// goes backwards is ignored rather than draining the bucket.
+//
+// It is package-scoped, so the compiler cannot keep production code off it.
+// TestClockSeamIsTestOnly is what does: outside _test.go files, allow is the
+// only function permitted to name it, which is what keeps the read pump's
+// throttle the configured one.
+//
+// The instant is a parameter rather than a field on the struct: a limiter is
+// embedded by value in every Client and this is a per-message path, so a
+// func-valued field would cost an indirect call per message and grow every
+// Client.
+func (rl *rateLimiter) allowAt(now time.Time) bool {
 	if rl.capacity <= 0 {
 		return true
 	}

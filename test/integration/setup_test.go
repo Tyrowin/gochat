@@ -34,6 +34,16 @@ const (
 	// registerWait is how long a test will wait for the hub to catch up with
 	// connections it has already established.
 	registerWait = 5 * time.Second
+
+	// loopbackHost is the interface every service in this package binds to.
+	//
+	// A bare ":port" binds every interface, which makes the test binary a program
+	// accepting connections from the network: a desktop firewall then asks the
+	// developer to allow it. `go test` links a fresh binary at a new temporary
+	// path on each run, so the allow-once answer never sticks and the prompt
+	// returns every run. Nothing here needs to be reachable from off-box — the
+	// clients are in this process — so the address is explicit and loopback-only.
+	loopbackHost = "127.0.0.1"
 )
 
 // shutdownContext returns a context carrying the given budget, cancelled when
@@ -67,7 +77,7 @@ func startHub(t *testing.T, cfg *server.Config) *server.Hub {
 type testService struct {
 	*server.Service
 
-	port string
+	addr string
 	stop context.CancelFunc
 	done chan error
 
@@ -75,14 +85,17 @@ type testService struct {
 	runErr error
 }
 
-// startService runs a service on port and returns once it is accepting
-// requests. It is stopped when the test ends if the test did not stop it itself.
+// startService runs a service on port, bound to [loopbackHost], and returns once
+// it is accepting requests. It is stopped when the test ends if the test did not
+// stop it itself.
 func startService(t *testing.T, port string) *testService {
 	t.Helper()
 
+	addr := loopbackHost + port
+
 	cfg := server.NewConfig()
-	cfg.Port = port
-	cfg.AllowedOrigins = []string{testOriginURL, "http://localhost" + port}
+	cfg.Port = addr
+	cfg.AllowedOrigins = []string{testOriginURL, "http://" + addr}
 	// Rate limiting is exercised in security_test.go; here it would only throttle
 	// the messages a lifecycle test needs in flight.
 	cfg.RateLimit = server.RateLimitConfig{Burst: 1000, RefillInterval: time.Second}
@@ -90,7 +103,7 @@ func startService(t *testing.T, port string) *testService {
 	svc := server.New(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	svcTest := &testService{Service: svc, port: port, stop: cancel, done: make(chan error, 1)}
+	svcTest := &testService{Service: svc, addr: addr, stop: cancel, done: make(chan error, 1)}
 
 	go func() { svcTest.done <- svc.Run(ctx) }()
 	t.Cleanup(func() { _ = svcTest.shutdown(t) })
@@ -99,9 +112,9 @@ func startService(t *testing.T, port string) *testService {
 	return svcTest
 }
 
-func (s *testService) baseURL() string { return "http://localhost" + s.port }
+func (s *testService) baseURL() string { return "http://" + s.addr }
 
-func (s *testService) wsURL() string { return "ws://localhost" + s.port + "/ws" }
+func (s *testService) wsURL() string { return "ws://" + s.addr + "/ws" }
 
 // shutdown cancels the service's context and returns what Run returned. Calling
 // it more than once — which the test cleanup does — replays the first result.
