@@ -377,11 +377,12 @@ func TestZeroValueRateLimiterAllows(t *testing.T) {
 // the whole budget. The refill arithmetic is pinned below, against the allowAt
 // seam.
 //
-// It does not detect a constructor baseline behind allow's clock: the cap at
-// capacity absorbs the excess refill, so a bucket that starts full arrives full
-// either way. A baseline ahead of it is a different matter — elapsed time stays
-// negative, and allowAt skips the branch that would move it, so the bucket never
-// refills at all until the wall clock catches up.
+// What it does not do is check the constructor's baseline against allow's
+// clock, in either direction. A baseline behind the clock is absorbed by the cap
+// at capacity, so a bucket that starts full arrives full anyway; one ahead of it
+// yields negative elapsed time, which allowAt skips — and over the microseconds
+// this test runs, neither shows up as a token granted or withheld. The mutants
+// were tried and survived.
 func TestRateLimiterThrottlesAtCapacity(t *testing.T) {
 	t.Parallel()
 

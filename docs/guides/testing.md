@@ -144,7 +144,8 @@ Follow the conventions already in the suite:
   through `NewClient` and gets the real clock. A clock a caller can pass is a limit a caller can
   loosen, so keep production off a seam like that — and since Go has no visibility level that says
   "tests only", assert it: `TestClockSeamIsTestOnly` parses the package's non-test files and fails if
-  anything but the wrapper reaches the seam.
+  anything but the wrapper names the seam. Say in the test what such a check does *not* cover; that
+  one guards the seam functions, not every route to a stale baseline.
 
 ### Benchmarks
 

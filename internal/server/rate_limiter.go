@@ -61,8 +61,9 @@ func (rl *rateLimiter) allow() bool {
 // goes backwards is ignored rather than draining the bucket.
 //
 // It is package-scoped, so the compiler cannot keep production code off it.
-// TestClockSeamIsTestOnly is what does: allow is the only non-test caller
-// permitted, which is what makes the read pump's throttle the configured one.
+// TestClockSeamIsTestOnly is what does: outside _test.go files, allow is the
+// only function permitted to name it, which is what keeps the read pump's
+// throttle the configured one.
 //
 // The instant is a parameter rather than a field on the struct: a limiter is
 // embedded by value in every Client and this is a per-message path, so a

@@ -124,7 +124,11 @@ test that has to spend the real time first.
 The seam is package-scoped, so the compiler cannot keep production code off it; `TestClockSeamIsTestOnly`
 does instead. It parses every non-test file in the package and fails if anything but the two wrappers
 names an `-At` variant, which is what turns "production supplies no instant" from a convention into a
-checked property.
+checked property. It matches the wrappers by receiver as well as name, and walks whole files rather
+than function bodies, so neither an unrelated method called `allow` nor a package-level `var` slips
+past. What it does not cover is the struct itself: `rateLimiter`'s fields are package-scoped too, so a
+composite literal or a direct write to `last` could still arrange a stale baseline without naming the
+seam. That door predates the seam and is unchanged by it.
 
 The instant is an argument on the seam rather than a `func() time.Time` field on the struct
 deliberately: a limiter sits by value inside every `Client` and `allow` runs once per message, so a
